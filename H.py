@@ -1,3 +1,5 @@
+# Requires transformers >= 5.9.0, which ships native support for the hrm_text model class:
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
