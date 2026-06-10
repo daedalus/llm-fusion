@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Autoregressive text completion using fused Ouro-1.4B + HRM-Text-1B.
 
-Generates token-by-token, maintaining per-model input_ids sequences
-to avoid tokenization instability from string re-encoding.
+HRM requires chat format (<|im_start|><|condition|>prompt<|im_end|>),
+condition tags (direct/cot/noisy/synth), and prefix-LM token_type_ids.
 
 Usage:
   python3 text_completion.py --local "The capital of France is"
-  python3 text_completion.py --local -n 50 "In the beginning"
   python3 text_completion.py --model ouro --local "The capital of France is"
-  python3 text_completion.py --model hrm --local "The capital of France is"
-  python3 text_completion.py --local --top-k 30 --temp 1.2 --ouro-weight 0.4 "Q: What is"
+  python3 text_completion.py --model hrm --local -n 30 "The capital of France is"
+  python3 text_completion.py --model hrm --condition cot --local "Explain the sky"
+  python3 text_completion.py --local -n 30 --rep-penalty 1.1 --ouro-weight 0.3 "Q: What is"
 """
 
 import argparse
@@ -21,6 +21,9 @@ from tokenizers import Tokenizer
 from token_matcher import TokenMatcher
 
 BASE = Path(__file__).parent.resolve()
+
+HRM_EOS_ID = 11
+OURO_EOS_ID = 0
 
 
 def softmax_top_k(logits: list[float], k: int) -> tuple[list[int], list[float]]:
@@ -150,6 +153,17 @@ def apply_repetition_penalty(logits: list[float], seen_ids: set[int], penalty: f
     return out
 
 
+def format_hrm_prompt(text: str, condition: str) -> str:
+    return f"<|im_start|><|{condition}|>{text}<|im_end|>"
+
+
+def strip_hrm_output(text: str) -> str:
+    import re
+    text = re.sub(r'<\|im_start\|>.*?<\|im_end\|>', '', text)
+    text = text.replace('<|box_end|>', '').replace('<|box_start|>', '')
+    return text.strip()
+
+
 def generate(
     text: str,
     max_new_tokens: int,
@@ -160,6 +174,7 @@ def generate(
     local: bool,
     model: str = "fused",
     repetition_penalty: float = 1.0,
+    condition: str = "direct",
 ):
     try:
         import torch
@@ -203,17 +218,21 @@ def generate(
     print(f"Model: {label}")
     if model == "fused":
         print(f"Weights: Ouro={ouro_weight}  HRM={1-ouro_weight}")
-    print(f"Generating up to {max_new_tokens} tokens (temp={temperature})")
+    print(f"Generating up to {max_new_tokens} tokens (cond={condition})")
     print("-" * 60)
-    print(text, end="", flush=True)
 
-    # Encode prompt once, maintain per-model input_ids sequences
+    # Encode prompt — Ouro gets raw text, HRM gets chat format
     if load_ouro:
         ouro_ids = ouro_tok.encode(text).ids
         ouro_gen_ids: set[int] = set()
     if load_hrm:
-        hrm_ids = hrm_tok.encode(text).ids
+        hrm_prompt = format_hrm_prompt(text, condition)
+        hrm_ids = hrm_tok.encode(hrm_prompt).ids
         hrm_gen_ids: set[int] = set()
+
+    print(f"Prompt (Ouro: {len(ouro_ids) if load_ouro else 0} tok, HRM: {len(hrm_ids) if load_hrm else 0} tok)")
+    print(text)
+    print("-" * 60)
 
     for step in range(max_new_tokens):
         if load_ouro:
@@ -224,8 +243,9 @@ def generate(
                 ouro_logits = apply_repetition_penalty(ouro_logits, ouro_gen_ids, repetition_penalty)
 
         if load_hrm:
+            hrm_tti = torch.ones(len(hrm_ids), dtype=torch.long, device=device).unsqueeze(0)
             with torch.no_grad():
-                hrm_out = hrm_model(input_ids=torch.tensor([hrm_ids], device=device))
+                hrm_out = hrm_model(input_ids=torch.tensor([hrm_ids], device=device), token_type_ids=hrm_tti)
             hrm_logits = hrm_out.logits[0, -1, :].tolist()
             if repetition_penalty != 1.0:
                 hrm_logits = apply_repetition_penalty(hrm_logits, hrm_gen_ids, repetition_penalty)
@@ -241,16 +261,19 @@ def generate(
                     ouro_gen_ids.add(otid)
             else:
                 ouro_ids.extend(ouro_tok.encode(token_str).ids)
+            eos_id = HRM_EOS_ID
         elif model == "ouro":
             tid, token_str, prob = sample_from_logits(ouro_logits, ouro_tok, top_k, temperature)
             ouro_ids.append(tid)
             ouro_gen_ids.add(tid)
+            eos_id = OURO_EOS_ID
         elif model == "hrm":
             tid, token_str, prob = sample_from_logits(hrm_logits, hrm_tok, top_k, temperature)
             hrm_ids.append(tid)
             hrm_gen_ids.add(tid)
+            eos_id = HRM_EOS_ID
 
-        if tid == 0:
+        if tid == eos_id:
             print(f"\n[EOS at step {step + 1}]")
             break
 
@@ -259,7 +282,7 @@ def generate(
     print()
     print("-" * 60)
     print(f"Generated {step + 1} tokens")
-    return token_str  # last token str
+    return
 
 
 def main():
@@ -276,6 +299,8 @@ def main():
                         help="Which model to use: fused, ouro, or hrm (default: fused)")
     parser.add_argument("--rep-penalty", type=float, default=1.0, dest="repetition_penalty",
                         help="Repetition penalty (>1.0 discourages repeats, default=1.0)")
+    parser.add_argument("--condition", choices=["direct", "cot", "noisy", "synth"], default="direct",
+                        help="HRM condition tag (direct/cot/noisy/synth, default: direct)")
 
     args = parser.parse_args()
     if not args.prompt:
@@ -292,6 +317,7 @@ def main():
         local=args.local,
         model=args.model,
         repetition_penalty=args.repetition_penalty,
+        condition=args.condition,
     )
 
 
