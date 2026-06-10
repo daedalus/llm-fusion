@@ -1,0 +1,13 @@
+model.safetensors
+*.safetensors
+__pycache__/
+*.pyc
+.DS_Store
+.git/
+.gitattributes
+.cache/
+*.lock
+*.incomplete
+.banner.jpg
+*.jpg
+*.png
