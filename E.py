@@ -1,3 +1,5 @@
+# IMPORTANT: Please use transformers<4.56.0 to avoid compatibility issues. We recommend transformers==4.54.1 or earlier versions.
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model_path = "./Ouro-1.4B"
