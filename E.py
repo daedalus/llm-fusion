@@ -9,7 +9,7 @@ model = AutoModelForCausalLM.from_pretrained(
     trust_remote_code=True
 )
 
-inputs = tokenizer("The capital of France is", return_tensors="pt").to(model.device)
+inputs = tokenizer("The future of AI is", return_tensors="pt").to(model.device)
 outputs = model.generate(**inputs, max_new_tokens=100)
 print(tokenizer.decode(outputs[0], skip_special_tokens=True))
 
