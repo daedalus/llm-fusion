@@ -61,6 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--perplexity", action="store_true",
         help="Evaluate perplexity instead of generating",
     )
+    parser.add_argument(
+        "--kl", action="store_true", dest="show_kl",
+        help="Show per-step KL divergence between model distributions",
+    )
     return parser
 
 
@@ -87,6 +91,7 @@ def main() -> int:
         dynamic_initial_weight=args.dynamic_initial_weight,
         dynamic_final_weight=args.dynamic_final_weight,
         perplexity=args.perplexity,
+        show_kl=args.show_kl,
     )
     generate(**gen_kwargs)
     return 0

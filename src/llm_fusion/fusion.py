@@ -8,6 +8,18 @@ from tokenizers import Tokenizer
 from llm_fusion.token_matcher import TokenMatcher, Match
 
 
+def compute_kl(p: dict[int, float], q: dict[int, float]) -> float:
+    all_ids = set(p) | set(q)
+    kl = 0.0
+    for tid in all_ids:
+        p_prob = p.get(tid, 0.0)
+        if p_prob == 0.0:
+            continue
+        q_prob = max(q.get(tid, 0.0), 1e-10)
+        kl += p_prob * math.log(p_prob / q_prob)
+    return kl
+
+
 def softmax_top_k(logits: list[float], k: int) -> tuple[list[int], list[float]]:
     if not logits:
         return [], []
@@ -183,6 +195,22 @@ class Fuser:
         if self.strategy == "dynamic":
             return self._fuse_logits_dynamic(ouro_logits, hrm_logits)
         return self._fuse_logits_average(ouro_logits, hrm_logits)
+
+    def model_distributions(
+        self, ouro_logits: list[float], hrm_logits: list[float],
+    ) -> tuple[dict[int, float], dict[int, float]]:
+        ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
+        hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
+        ouro_mapped: dict[int, float] = {}
+        for oid, prob in zip(ouro_top_ids, ouro_probs):
+            match = self.matcher.ouro_to_hrm(oid)
+            if not match.target_ids:
+                continue
+            share = prob / len(match.target_ids)
+            for tid in match.target_ids:
+                ouro_mapped[tid] = ouro_mapped.get(tid, 0.0) + share
+        hrm_dict = dict(zip(hrm_top_ids, hrm_probs))
+        return ouro_mapped, hrm_dict
 
     def sample_token(
         self, ouro_logits: list[float], hrm_logits: list[float], temperature: float = 1.0,

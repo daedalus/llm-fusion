@@ -111,6 +111,37 @@ class TestDynamic:
         assert results == []
 
 
+class TestKL:
+    def test_kl_identical(self):
+        d = {1: 0.5, 2: 0.5}
+        from llm_fusion.fusion import compute_kl
+        assert abs(compute_kl(d, d)) < 1e-10
+
+    def test_kl_divergent(self):
+        from llm_fusion.fusion import compute_kl
+        p = {1: 0.9, 2: 0.1}
+        q = {1: 0.1, 2: 0.9}
+        assert compute_kl(p, q) > 0
+
+    def test_kl_zero_prob(self):
+        from llm_fusion.fusion import compute_kl
+        p = {1: 1.0}
+        q = {2: 1.0}
+        kl = compute_kl(p, q)
+        assert kl > 0
+
+    def test_model_distributions(self, matcher):
+        from llm_fusion.fusion import Fuser
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok)
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 5.0
+        hrm_logits[371] = 5.0
+        ouro_dist, hrm_dist = fuser.model_distributions(ouro_logits, hrm_logits)
+        assert len(ouro_dist) > 0
+        assert len(hrm_dist) > 0
+
+
 class TestSoftmaxTopK:
     def test_basic_top_k(self):
         logits = [0.0, 1.0, 2.0, 3.0]

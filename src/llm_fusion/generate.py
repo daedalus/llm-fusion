@@ -9,7 +9,7 @@ from pathlib import Path
 from tokenizers import Tokenizer
 
 from llm_fusion.token_matcher import TokenMatcher
-from llm_fusion.fusion import Fuser, softmax_top_k
+from llm_fusion.fusion import Fuser, softmax_top_k, compute_kl
 
 HRM_EOS_ID = 11
 OURO_EOS_ID = 0
@@ -152,6 +152,7 @@ def generate(
     dynamic_initial_weight: float = 0.8,
     dynamic_final_weight: float = 0.2,
     perplexity: bool = False,
+    show_kl: bool = False,
     ouro_path: str = "ByteDance/Ouro-1.4B",
     hrm_path: str = "sapientinc/HRM-Text-1B",
     base_dir: str | Path = "",
@@ -280,6 +281,11 @@ def generate(
         if model == "fused":
             fuser.current_step = step
             tid, token_str, prob = fuser.sample_token(ouro_logits, hrm_logits, temperature)
+            if show_kl:
+                ouro_dist, hrm_dist = fuser.model_distributions(ouro_logits, hrm_logits)
+                kl_oh = compute_kl(ouro_dist, hrm_dist)
+                kl_ho = compute_kl(hrm_dist, ouro_dist)
+                print(f" [KL o→h={kl_oh:.2f} h→o={kl_ho:.2f}]", end="", flush=True)
             hrm_ids.append(tid)
             hrm_gen_ids.add(tid)
             eos_id = HRM_EOS_ID
