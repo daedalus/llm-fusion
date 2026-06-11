@@ -3,6 +3,8 @@ __all__ = [
     "Match",
     "TokenMatcher",
     "Fuser",
+    "CausalLM",
+    "load_models",
     "patch_ouro_model",
     "generate",
     "format_hrm_prompt",
@@ -28,8 +30,8 @@ from llm_fusion.generate import (
     compute_perplexity,
     format_hrm_prompt,
     generate,
-    patch_ouro_model,
     strip_hrm_output,
 )
+from llm_fusion.loader import CausalLM, load_models, patch_ouro_model
 from llm_fusion.metrics import compare_distributions, evaluate_text, fusion_gain
 from llm_fusion.token_matcher import Match, TokenMatcher

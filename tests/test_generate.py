@@ -13,9 +13,9 @@ from llm_fusion.generate import (
     compute_fused_perplexity,
     compute_perplexity,
     format_hrm_prompt,
-    patch_ouro_model,
     strip_hrm_output,
 )
+from llm_fusion.loader import patch_ouro_model
 
 
 @dataclass

@@ -118,6 +118,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Debug output (DEBUG logging)",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducible generation",
+    )
     return parser
 
 
@@ -161,6 +167,7 @@ def main() -> int:
         "eval_text": args.eval_text,
         "verbose": args.verbose,
         "debug": args.debug,
+        "seed": args.seed,
     }
     generate(**gen_kwargs)
     return 0

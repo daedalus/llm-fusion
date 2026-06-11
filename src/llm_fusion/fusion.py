@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import random
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -236,9 +237,10 @@ class Fuser:
         ouro_logits: list[float],
         hrm_logits: list[float],
         temperature: float = 1.0,
+        rng: random.Random | None = None,
     ) -> tuple[int, str, float]:
-        import random
-
+        if rng is None:
+            rng = random.Random()
         candidates = self.fuse_logits(ouro_logits, hrm_logits)
         if not candidates:
             return 0, "", 0.0
@@ -250,7 +252,7 @@ class Fuser:
         weights = [math.exp(lp - max_log) for lp in temp_probs]
         total = sum(weights)
         normalized = [w / total for w in weights]
-        r = random.random()
+        r = rng.random()
         cumulative = 0.0
         for i, w in enumerate(normalized):
             cumulative += w

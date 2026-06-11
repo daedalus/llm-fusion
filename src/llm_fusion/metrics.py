@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from llm_fusion.fusion import Fuser
+    from llm_fusion.loader import CausalLM
 
 
 def fusion_gain(
@@ -68,11 +72,11 @@ def compare_distributions(
 
 def evaluate_text(
     text: str,
-    ouro_model: Any,
-    hrm_model: Any,
+    ouro_model: CausalLM,
+    hrm_model: CausalLM,
     ouro_tok: Any,
     hrm_tok: Any,
-    fuser: Any,
+    fuser: Fuser | None,
     device: str = "cpu",
     max_tokens: int = 100,
 ) -> dict[str, Any]:
@@ -130,12 +134,14 @@ def evaluate_text(
         total_fused_logprob += math.log(max(fused_prob, 1e-10))
         n_tokens += 1
 
-        if hrm_prob > ouro_prob:
-            oracle_wins += 1
-        elif ouro_prob > hrm_prob:
-            oracle_wins += 1
+        ouro_top1_tid = max(range(len(ouro_logits)), key=lambda i: ouro_logits[i])
+        hrm_top1_tid = max(range(len(hrm_logits)), key=lambda i: hrm_logits[i])
+        if ouro_prob >= hrm_prob:
+            better_parent_top1 = ouro_top1_tid
         else:
-            oracle_wins += 0.5
+            better_parent_top1 = hrm_top1_tid
+        if target_tid == better_parent_top1:
+            oracle_wins += 1
 
         if fused_prob > max(ouro_prob, hrm_prob):
             fusion_wins += 1

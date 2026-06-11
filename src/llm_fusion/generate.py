@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 import re
 import sys
 from pathlib import Path
@@ -23,10 +24,6 @@ try:
     HAS_OURO_CACHE = True
 except ImportError:
     HAS_OURO_CACHE = False
-
-
-def patch_ouro_model(config: Any) -> None:
-    config._attn_implementation = "eager"
 
 
 def format_hrm_prompt(text: str, condition: str) -> str:
@@ -59,9 +56,10 @@ def sample_from_logits(
     tok: Tokenizer,
     k: int,
     temperature: float,
+    rng: random.Random | None = None,
 ) -> tuple[int, str, float]:
-    import random
-
+    if rng is None:
+        rng = random.Random()
     ids, probs = softmax_top_k(logits, k)
     if temperature <= 0 or len(ids) == 1:
         return ids[0], tok.decode([ids[0]]), probs[0]
@@ -70,7 +68,7 @@ def sample_from_logits(
     weights = [math.exp(lp - max_log) for lp in temp_probs]
     total = sum(weights)
     normalized = [w / total for w in weights]
-    r = random.random()
+    r = rng.random()
     cumulative = 0.0
     for i, w in enumerate(normalized):
         cumulative += w
@@ -81,7 +79,7 @@ def sample_from_logits(
 
 def compute_perplexity(
     text: str,
-    model: Any,  # noqa: ANN401
+    model: CausalLM,
     tokenizer: Tokenizer,
     device: str = "cpu",
     stride: int = 512,
@@ -118,8 +116,8 @@ def compute_perplexity(
 
 def compute_fused_perplexity(
     text: str,
-    ouro_model: Any,  # noqa: ANN401
-    hrm_model: Any,  # noqa: ANN401
+    ouro_model: CausalLM,
+    hrm_model: CausalLM,
     ouro_tok: Tokenizer,
     hrm_tok: Tokenizer,
     fuser: Fuser,
@@ -175,6 +173,7 @@ def generate(
     eval_text: str = "",
     verbose: bool = False,
     debug: bool = False,
+    seed: int | None = None,
     ouro_path: str = "ByteDance/Ouro-1.4B",
     hrm_path: str = "sapientinc/HRM-Text-1B",
     base_dir: str | Path = "",
@@ -185,6 +184,8 @@ def generate(
     except ImportError as e:
         print(f"Error: requires torch and transformers ({e})", file=sys.stderr)
         sys.exit(1)
+
+    rng = random.Random(seed)
 
     bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
     ouro_tok_path = bd / "Ouro-1.4B/tokenizer.json"
@@ -335,6 +336,7 @@ def generate(
     generated_text = ""
     ouro_gen_ids: set[int] = set()
     ouro_ids = list(ouro_prompt_ids) if load_ouro else []
+    prev_gen_text = ""
 
     print(
         f"Prompt (Ouro: {len(ouro_prompt_ids) if load_ouro else 0} tok, "
@@ -351,7 +353,16 @@ def generate(
         log.debug("Step %d, generated_text length %d, generated_text=%s", step, len(generated_text), repr(generated_text[-40:]))
         if load_ouro:
             if model == "fused":
-                ouro_ids = ouro_prompt_ids + ouro_tok.encode(generated_text).ids
+                new_part = generated_text[len(prev_gen_text):]
+                if not prev_gen_text:
+                    ouro_ids = ouro_prompt_ids + ouro_tok.encode(generated_text).ids
+                else:
+                    overlap = min(len(prev_gen_text), 32)
+                    resuffix = prev_gen_text[-overlap:] + new_part
+                    resuffix_ids = ouro_tok.encode(resuffix).ids
+                    keep = len(ouro_ids) - overlap
+                    ouro_ids = ouro_ids[:keep] + resuffix_ids
+                prev_gen_text = generated_text
             with torch.no_grad():
                 ouro_kwargs = {}
                 if ouro_cache is not None and step > 0:
@@ -380,7 +391,7 @@ def generate(
 
         if model == "fused":
             fuser.current_step = step
-            tid, token_str, prob = fuser.sample_token(ouro_logits, hrm_logits, temperature)
+            tid, token_str, prob = fuser.sample_token(ouro_logits, hrm_logits, temperature, rng)
             if show_kl:
                 ouro_dist, hrm_dist = fuser.model_distributions(ouro_logits, hrm_logits)
                 kl_oh = compute_kl(ouro_dist, hrm_dist)
@@ -400,12 +411,12 @@ def generate(
             hrm_gen_ids.add(tid)
             eos_id = HRM_EOS_ID
         elif model == "ouro":
-            tid, token_str, prob = sample_from_logits(ouro_logits, ouro_tok, top_k, temperature)
+            tid, token_str, prob = sample_from_logits(ouro_logits, ouro_tok, top_k, temperature, rng)
             ouro_ids.append(tid)
             ouro_gen_ids.add(tid)
             eos_id = OURO_EOS_ID
         elif model == "hrm":
-            tid, token_str, prob = sample_from_logits(hrm_logits, hrm_tok, top_k, temperature)
+            tid, token_str, prob = sample_from_logits(hrm_logits, hrm_tok, top_k, temperature, rng)
             hrm_ids.append(tid)
             hrm_gen_ids.add(tid)
             eos_id = HRM_EOS_ID
