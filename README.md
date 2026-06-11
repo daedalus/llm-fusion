@@ -81,6 +81,12 @@ llm-fusion-benchmark
 
 # Custom prompt and token count
 python -m llm_fusion benchmark --prompt "Hello world" -n 100
+
+# Run robustness benchmark on a diverse battery of 25+ prompts
+# Measures: perplexity, fusion gain, win rate, KL divergence
+# Reports aggregated by category (factual, reasoning, math, code, etc.)
+python -m llm_fusion benchmark --robustness
+llm-fusion-benchmark --robustness
 ```
 
 ### Parameters
@@ -147,6 +153,8 @@ See `AGENTS.md` for details.
 │   ├── cli.py                 # CLI argument parsing
 │   ├── generate.py            # Generation loop + perplexity evaluation
 │   ├── fusion.py              # Fuser class (5 strategies) + KL divergence
+│   ├── metrics.py             # Fusion quality metrics (gain, win rate, eval)
+│   ├── benchmark.py           # Speed benchmarks + robustness battery
 │   ├── token_matcher.py       # Bidirectional token ID matcher
 │   ├── benchmark.py           # Speed/memory benchmark runner
 │   └── py.typed               # Type hints marker

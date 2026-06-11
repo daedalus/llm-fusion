@@ -38,8 +38,10 @@ src/llm_fusion/
   __main__.py       — python -m entry point
   cli.py            — argparse CLI
   generate.py       — autoregressive generation loop, model patching, prompt formatting
-  fusion.py         — weighted-average logit fusion logic
+  fusion.py         — weighted-average logit fusion logic + KL divergence
   token_matcher.py  — bidirectional token ID matcher (ouro ↔ hrm)
+  metrics.py        — fusion quality metrics (gain, win rate, oracle rate, eval)
+  benchmark.py      — speed benchmarks + robustness battery (25+ diverse prompts)
 ```
 
 ## Key Design Decisions

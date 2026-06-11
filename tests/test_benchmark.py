@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from llm_fusion.benchmark import BenchmarkResult, format_table, maybe_get_memory_mb
+from llm_fusion.benchmark import (
+    ROBUSTNESS_BATTERY,
+    BenchmarkResult,
+    RobustnessResult,
+    format_robustness_table,
+    format_table,
+    maybe_get_memory_mb,
+)
 
 
 class TestBenchmarkResult:
@@ -55,3 +62,73 @@ class TestMemory:
         mem = maybe_get_memory_mb()
         assert isinstance(mem, float)
         assert mem >= 0.0
+
+
+class TestRobustnessBattery:
+    def test_battery_is_populated(self):
+        assert len(ROBUSTNESS_BATTERY) >= 20
+
+    def test_all_prompts_have_category(self):
+        for entry in ROBUSTNESS_BATTERY:
+            assert "prompt" in entry
+            assert "category" in entry
+            assert entry["prompt"]
+
+    def test_categories_are_diverse(self):
+        cats = {e["category"] for e in ROBUSTNESS_BATTERY}
+        assert "factual" in cats
+        assert "reasoning" in cats
+        assert "math" in cats
+        assert "creative" in cats
+
+    def test_no_duplicate_prompts(self):
+        prompts = [e["prompt"] for e in ROBUSTNESS_BATTERY]
+        assert len(prompts) == len(set(prompts))
+
+
+class TestRobustnessResult:
+    def test_defaults(self):
+        r = RobustnessResult()
+        assert r.category == ""
+        assert r.ouro_ppl == 0.0
+        assert r.fusion_win_rate == 0.0
+
+    def test_custom_values(self):
+        r = RobustnessResult(
+            prompt="test", category="math", avg_fusion_gain=0.5, fusion_win_rate=0.8,
+        )
+        assert r.avg_fusion_gain == 0.5
+        assert r.fusion_win_rate == 0.8
+
+
+class TestFormatRobustnessTable:
+    def test_empty(self):
+        table = format_robustness_table([])
+        assert "no results" in table
+
+    def test_single_entry(self):
+        r = RobustnessResult(prompt="test", category="math", avg_fusion_gain=0.5)
+        table = format_robustness_table([r])
+        assert "math" in table
+        assert "TOTAL" in table
+
+    def test_grouped_by_category(self):
+        results = [
+            RobustnessResult(prompt="a", category="math", avg_fusion_gain=0.1),
+            RobustnessResult(prompt="b", category="math", avg_fusion_gain=0.2),
+            RobustnessResult(prompt="c", category="code", avg_fusion_gain=0.3),
+        ]
+        table = format_robustness_table(results)
+        assert "math" in table
+        assert "code" in table
+        assert "TOTAL" in table
+
+    def test_fusion_verdict_positive(self):
+        r = RobustnessResult(avg_fusion_gain=0.1)
+        table = format_robustness_table([r])
+        assert "YES" in table
+
+    def test_fusion_verdict_negative(self):
+        r = RobustnessResult(avg_fusion_gain=-0.1)
+        table = format_robustness_table([r])
+        assert "NO" in table
