@@ -30,6 +30,7 @@ class Fuser:
         ouro_weight: float = 0.5,
         top_k: int = 50,
         threshold: float = 0.01,
+        strategy: str = "average",
     ):
         self.matcher = matcher
         self.ouro_tok = ouro_tok
@@ -38,8 +39,11 @@ class Fuser:
         self.hrm_weight = 1.0 - ouro_weight
         self.top_k = top_k
         self.threshold = threshold
+        if strategy not in ("average", "product"):
+            raise ValueError(f"Unknown strategy: {strategy!r}")
+        self.strategy = strategy
 
-    def fuse_logits(
+    def _fuse_logits_average(
         self, ouro_logits: list[float], hrm_logits: list[float],
     ) -> list[tuple[int, float, str]]:
         ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
@@ -60,8 +64,43 @@ class Fuser:
 
         filtered = [(tid, p) for tid, p in fused.items() if p >= self.threshold]
         filtered.sort(key=lambda x: -x[1])
-
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+
+    def _fuse_logits_product(
+        self, ouro_logits: list[float], hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
+        hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
+
+        ouro_given_hrm: dict[int, float] = {}
+        for oid, prob in zip(ouro_top_ids, ouro_probs):
+            match = self.matcher.ouro_to_hrm(oid)
+            if not match.target_ids:
+                continue
+            share = prob / len(match.target_ids)
+            for tid in match.target_ids:
+                ouro_given_hrm[tid] = ouro_given_hrm.get(tid, 0.0) + share
+
+        hrm_probs_dict = dict(zip(hrm_top_ids, hrm_probs))
+
+        all_ids = set(ouro_given_hrm) | set(hrm_probs_dict)
+        fused = {}
+        for tid in all_ids:
+            p_ouro = ouro_given_hrm.get(tid, 0.0)
+            p_hrm = hrm_probs_dict.get(tid, 0.0)
+            p = p_ouro * p_hrm
+            if p >= self.threshold:
+                fused[tid] = p
+
+        filtered = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+
+    def fuse_logits(
+        self, ouro_logits: list[float], hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        if self.strategy == "product":
+            return self._fuse_logits_product(ouro_logits, hrm_logits)
+        return self._fuse_logits_average(ouro_logits, hrm_logits)
 
     def sample_token(
         self, ouro_logits: list[float], hrm_logits: list[float], temperature: float = 1.0,

@@ -40,6 +40,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--condition", choices=["direct", "cot", "noisy", "synth"],
         default="direct", help="HRM condition tag",
     )
+    parser.add_argument(
+        "--strategy", choices=["average", "product"], default="average",
+        help="Fusion strategy: average (weighted) or product (product of experts)",
+    )
     return parser
 
 
@@ -61,6 +65,7 @@ def main() -> int:
         model=args.model,
         repetition_penalty=args.repetition_penalty,
         condition=args.condition,
+        strategy=args.strategy,
     )
     return 0
 

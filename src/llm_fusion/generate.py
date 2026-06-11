@@ -80,6 +80,7 @@ def generate(
     model: str = "fused",
     repetition_penalty: float = 1.0,
     condition: str = "direct",
+    strategy: str = "average",
     ouro_path: str = "ByteDance/Ouro-1.4B",
     hrm_path: str = "sapientinc/HRM-Text-1B",
     base_dir: str | Path = "",
@@ -124,7 +125,7 @@ def generate(
             hrm_model_path, torch_dtype=dtype, device_map=device,
         )
 
-    fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold)
+    fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, strategy)
     label = {"fused": "Fused", "ouro": "Ouro-1.4B", "hrm": "HRM-Text-1B"}[model]
     print(f"Model: {label}")
     if model == "fused":

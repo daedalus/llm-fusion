@@ -87,3 +87,38 @@ class TestFuser:
         fuser_hrm = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, ouro_weight=0.1)
         assert fuser_ouro.ouro_weight == 0.9
         assert fuser_hrm.ouro_weight == 0.1
+
+    def test_invalid_strategy_raises(self, matcher):
+        with pytest.raises(ValueError, match="Unknown strategy"):
+            Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="ensemble")
+
+    def test_fuse_logits_product_basic(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="product")
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 5.0
+        hrm_logits[371] = 5.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(results) > 0
+
+    def test_fuse_logits_product_no_overlap(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="product",
+                       threshold=0.0)
+        ouro_logits = [-100.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [-100.0] * fuser.hrm_tok.get_vocab_size()
+        hrm_logits[42] = 10.0
+        ouro_logits[0] = 10.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        for _, p, _ in results:
+            assert p < 1e-6
+
+    def test_product_kills_uncommon(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="product")
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 5.0
+        hrm_logits[371] = 5.0
+        avg = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="average")
+        avg_results = avg.fuse_logits(ouro_logits, hrm_logits)
+        prod_results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(prod_results) <= len(avg_results) + 1
