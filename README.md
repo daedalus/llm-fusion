@@ -10,6 +10,29 @@ Fused autoregressive text completion using ByteDance Ouro-1.4B + Sapient HRM-Tex
 Both models run under transformers 5.11.0. Fusion strategies operate in HRM's vocabulary space
 via bidirectional token ID matching.
 
+## Why
+
+Two small models can disagree in useful ways. Ouro-1.4B is a Universal Transformer
+(with recurrent depth via UT steps and early-exit), while HRM-Text-1B is a prefix-LM
+trained with explicit reasoning condition tags (direct, cot, noisy, synth). They were
+trained differently, tokenize differently, and have different confidence profiles on
+different kinds of text. The hypothesis is that their disagreements are informative —
+when both models agree on a token, that's a strong signal; when they diverge, the fusion
+distribution captures uncertainty that either model alone would paper over with false
+confidence.
+
+The KL divergence tooling (`--kl`) and fusion gain metric (`--gain`) exist precisely to
+test this hypothesis empirically, token by token. A positive fusion gain means the fused
+distribution assigned higher probability to the ground-truth token than the best parent
+did alone — the combination genuinely knew something neither model knew individually. The
+robustness benchmark across 8 prompt categories is designed to find out when and for what
+kinds of text that actually holds.
+
+More broadly, this is a low-cost alternative to model merging or ensemble distillation. No
+retraining, no weight surgery — just run both models, bridge their vocabularies, and blend
+at inference time. The cost is speed (two forward passes per token); the payoff, if the
+hypothesis holds, is better calibration and fewer confidently wrong completions.
+
 ## Architecture highlights
 
 Token bridging is the hard part. The two models have completely different vocabularies
@@ -172,7 +195,8 @@ See `AGENTS.md` for details.
 │   ├── __init__.py
 │   ├── __main__.py            # python -m llm_fusion
 │   ├── cli.py                 # CLI argument parsing
-│   ├── generate.py            # Generation loop + perplexity evaluation
+│   ├── generate.py            # Generation loop, perplexity, evaluation
+│   ├── loader.py              # Model loading, CausalLM protocol
 │   ├── fusion.py              # Fuser class (5 strategies) + KL divergence
 │   ├── metrics.py             # Fusion quality metrics (gain, win rate, eval)
 │   ├── benchmark.py           # Speed benchmarks + robustness battery
