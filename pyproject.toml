@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-fusion"
+version = "0.1.0"
+description = "Fused autoregressive text completion using Ouro-1.4B + HRM-Text-1B"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Dar\u00edo Clavijo", email = "clavijodario@gmail.com"}
+]
+dependencies = [
+    "tokenizers>=0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "hatch",
+    "ruff",
+    "mypy",
+    "pre-commit",
+]
+test = [
+    "pytest",
+    "pytest-cov",
+    "hypothesis",
+]
+lint = [
+    "prospector[with_ruff,with_mypy]",
+]
+all = ["llm-fusion[dev,test,lint]"]
+
+[project.scripts]
+llm-fusion = "llm_fusion.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/daedalus/LLM_EXPERIMENT"
+Repository = "https://github.com/daedalus/LLM_EXPERIMENT"
+Issues = "https://github.com/daedalus/LLM_EXPERIMENT/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_fusion"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/llm_fusion"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "N", "C4", "ARG"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*" = ["ARG"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short --cov=src --cov-fail-under=50"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+exclude = ["tests/*", "*/__init__.py"]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

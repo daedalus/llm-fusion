@@ -1,26 +1,11 @@
-#!/usr/bin/env python3
-"""Bidirectional token ID matcher between Ouro-1.4B and HRM-Text-1B.
+"""Bidirectional token ID matcher between Ouro-1.4B and HRM-Text-1B."""
 
-Maps token IDs across differing BPE vocabularies with confidence levels.
-Handles special tokens via explicit mapping, falls back to decode/re-encode
-for regular tokens, and validates round-trips.
-
-Usage:
-  token_matcher.py                # interactive REPL
-  echo "ouro 42" | token_matcher.py
-  echo "hrm 100 200 300" | token_matcher.py
-  echo "seq ouro 12 45 88 2" | token_matcher.py
-"""
+from __future__ import annotations
 
 import json
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from tokenizers import Tokenizer
-
-
-BASE = Path(__file__).parent.resolve()
-MODEL_DIRS = {"ouro": "Ouro-1.4B", "hrm": "HRM-Text-1B"}
 
 
 @dataclass
@@ -39,10 +24,16 @@ def _load_added_tokens(path: Path) -> dict[int, str]:
 
 
 class TokenMatcher:
-    def __init__(self):
+    def __init__(
+        self,
+        ouro_tokenizer_path: str | Path = "Ouro-1.4B/tokenizer.json",
+        hrm_tokenizer_path: str | Path = "HRM-Text-1B/tokenizer.json",
+    ):
+        self.ouro_path = Path(ouro_tokenizer_path)
+        self.hrm_path = Path(hrm_tokenizer_path)
         self._check_dirs()
-        self.ouro_tok = Tokenizer.from_file(str(BASE / "Ouro-1.4B/tokenizer.json"))
-        self.hrm_tok = Tokenizer.from_file(str(BASE / "HRM-Text-1B/tokenizer.json"))
+        self.ouro_tok = Tokenizer.from_file(str(self.ouro_path))
+        self.hrm_tok = Tokenizer.from_file(str(self.hrm_path))
 
         self.hrm_vocab = self.hrm_tok.get_vocab()
         self.ouro_vocab = self.ouro_tok.get_vocab()
@@ -50,20 +41,17 @@ class TokenMatcher:
         self.hrm_id_to_str = {v: k for k, v in self.hrm_vocab.items()}
         self.ouro_id_to_str = {v: k for k, v in self.ouro_vocab.items()}
 
-        self.ouro_special = _load_added_tokens(BASE / "Ouro-1.4B/tokenizer.json")
-        self.hrm_special = _load_added_tokens(BASE / "HRM-Text-1B/tokenizer.json")
+        self.ouro_special = _load_added_tokens(self.ouro_path)
+        self.hrm_special = _load_added_tokens(self.hrm_path)
 
-    @staticmethod
-    def _check_dirs():
+    def _check_dirs(self) -> None:
         missing = []
-        for name in MODEL_DIRS.values():
-            if not (BASE / name / "tokenizer.json").exists():
-                missing.append(name)
+        for p in [self.ouro_path, self.hrm_path]:
+            if not p.exists():
+                missing.append(str(p))
         if missing:
-            paths = ", ".join(f"{BASE}/{m}/tokenizer.json" for m in missing)
             raise FileNotFoundError(
-                f"Missing tokenizer dirs: {paths}. "
-                f"Run this script from the directory containing Ouro-1.4B/ and HRM-Text-1B/."
+                f"Missing tokenizer files: {', '.join(missing)}"
             )
 
     def _is_special(self, token_id: int, src: str) -> bool:
@@ -75,7 +63,6 @@ class TokenMatcher:
         src_by_str = {v: k for k, v in src_specials.items()}
         dst_specials = self.hrm_special if dst == "hrm" else self.ouro_special
         dst_by_str = {v: k for k, v in dst_specials.items()}
-
         if token_str in src_by_str:
             return dst_by_str.get(token_str)
         return None
@@ -112,9 +99,8 @@ class TokenMatcher:
         return candidates
 
     def _map_single(self, token_id: int, src: str, dst: str) -> Match:
-        src_vocab = self.ouro_vocab if src == "ouro" else self.hrm_vocab
-        dst_vocab = self.hrm_vocab if src == "ouro" else self.ouro_vocab
         src_id_to_str = self.ouro_id_to_str if src == "ouro" else self.hrm_id_to_str
+        dst_vocab = self.hrm_vocab if src == "ouro" else self.ouro_vocab
         src_tok = self.ouro_tok if src == "ouro" else self.hrm_tok
         dst_tok = self.hrm_tok if src == "ouro" else self.ouro_tok
         dst_name = "hrm" if src == "ouro" else "ouro"
@@ -203,88 +189,10 @@ class TokenMatcher:
 
         return result
 
-    def show_info(self):
+    def show_info(self) -> None:
         print("Token Matcher: Ouro-1.4B <-> HRM-Text-1B")
         print(f"  Ouro vocab: {len(self.ouro_vocab):>5}  ({len(self.ouro_special):>2} special)")
         print(f"  HRM  vocab: {len(self.hrm_vocab):>5}  ({len(self.hrm_special):>2} special)")
         print(f"  Shared special tokens: "
               f"{len(set(self.ouro_special.values()) & set(self.hrm_special.values()))}")
         print()
-
-
-def interactive(matcher: TokenMatcher):
-    matcher.show_info()
-    while True:
-        try:
-            inp = input(">>> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not inp:
-            continue
-        if inp.lower() in ("q", "quit", "exit"):
-            break
-
-        parts = inp.split()
-        if len(parts) < 2:
-            print("  Usage: <model> <id> [...] | seq <model> <id> [...]")
-            continue
-
-        if parts[0].lower() == "seq":
-            model = parts[1].lower()
-            ids = parts[2:]
-            if model not in ("ouro", "hrm"):
-                print(f"  Unknown model '{model}'. Use 'ouro' or 'hrm'.")
-                continue
-            try:
-                token_ids = [int(x) for x in ids]
-            except ValueError:
-                print(f"  Invalid token IDs: {ids}")
-                continue
-            m = matcher.map_sequence(token_ids, model)
-            print(matcher.format_match(m, model.upper()))
-        else:
-            model = parts[0].lower()
-            ids = parts[1:]
-            if model not in ("ouro", "hrm"):
-                print(f"  Unknown model '{model}'. Use 'ouro' or 'hrm'.")
-                continue
-            for sid in ids:
-                try:
-                    tid = int(sid)
-                except ValueError:
-                    print(f"  Invalid token ID: {sid}")
-                    continue
-                fn = matcher.ouro_to_hrm if model == "ouro" else matcher.hrm_to_ouro
-                m = fn(tid)
-                print(matcher.format_match(m, model, tid))
-
-
-def main():
-    try:
-        matcher = TokenMatcher()
-    except FileNotFoundError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    if len(sys.argv) > 1:
-        matcher.show_info()
-        raw = sys.argv[1]
-        parts = raw.split()
-        if parts[0].lower() == "seq":
-            model = parts[1].lower()
-            ids = [int(x) for x in parts[2:]]
-            m = matcher.map_sequence(ids, model)
-            print(matcher.format_match(m, model.upper()))
-        else:
-            model = parts[0].lower()
-            ids = [int(x) for x in parts[1:]]
-            for tid in ids:
-                fn = matcher.ouro_to_hrm if model == "ouro" else matcher.hrm_to_ouro
-                m = fn(tid)
-                print(matcher.format_match(m, model, tid))
-    else:
-        interactive(matcher)
-
-
-if __name__ == "__main__":
-    main()
