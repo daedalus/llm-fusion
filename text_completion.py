@@ -20,6 +20,12 @@ from tokenizers import Tokenizer
 
 from token_matcher import TokenMatcher
 
+try:
+    from ouro_cache_fix import UniversalTransformerCache
+    HAS_OURO_CACHE = True
+except ImportError:
+    HAS_OURO_CACHE = False
+
 BASE = Path(__file__).parent.resolve()
 
 HRM_EOS_ID = 11
@@ -199,11 +205,6 @@ def generate(
             ouro_path, config=ouro_config, torch_dtype=dtype, device_map=device,
             trust_remote_code=True,
         )
-        if device == "cpu":
-            from ouro_cache_fix import UniversalTransformerCache
-            ouro_cache = UniversalTransformerCache()
-        else:
-            ouro_cache = None
     if load_hrm:
         hrm_model = AutoModelForCausalLM.from_pretrained(
             hrm_path, torch_dtype=dtype, device_map=device,
@@ -220,22 +221,30 @@ def generate(
 
     # Encode prompt — Ouro gets raw text, HRM gets chat format
     if load_ouro:
-        ouro_ids = ouro_tok.encode(text).ids
+        ouro_prompt_ids = ouro_tok.encode(text).ids
         ouro_gen_ids: set[int] = set()
     if load_hrm:
         hrm_prompt = format_hrm_prompt(text, condition)
         hrm_ids = hrm_tok.encode(hrm_prompt).ids
         hrm_gen_ids: set[int] = set()
 
-    print(f"Prompt (Ouro: {len(ouro_ids) if load_ouro else 0} tok, HRM: {len(hrm_ids) if load_hrm else 0} tok)")
+    generated_text = ""
+
+    print(f"Prompt (Ouro: {len(ouro_prompt_ids) if load_ouro else 0} tok, HRM: {len(hrm_ids) if load_hrm else 0} tok)")
     print(text)
     print("-" * 60)
 
     for step in range(max_new_tokens):
         if load_ouro:
+            if model == "fused":
+                ouro_ids = ouro_prompt_ids + ouro_tok.encode(generated_text).ids
+            elif step == 0:
+                ouro_ids = list(ouro_prompt_ids)
             with torch.no_grad():
                 ouro_kwargs = {}
-                if device == "cpu" and step > 0:
+                if HAS_OURO_CACHE and model != "fused" and step > 0:
+                    if step == 1:
+                        ouro_cache = UniversalTransformerCache()
                     ouro_kwargs["past_key_values"] = ouro_cache
                     ouro_kwargs["use_cache"] = True
                 ouro_out = ouro_model(
@@ -258,13 +267,6 @@ def generate(
             tid, token_str, prob = fuser.sample_token(ouro_logits, hrm_logits, temperature)
             hrm_ids.append(tid)
             hrm_gen_ids.add(tid)
-            m = matcher.hrm_to_ouro(tid)
-            if m.target_ids:
-                ouro_ids.extend(m.target_ids)
-                for otid in m.target_ids:
-                    ouro_gen_ids.add(otid)
-            else:
-                ouro_ids.extend(ouro_tok.encode(token_str).ids)
             eos_id = HRM_EOS_ID
         elif model == "ouro":
             tid, token_str, prob = sample_from_logits(ouro_logits, ouro_tok, top_k, temperature)
@@ -281,6 +283,7 @@ def generate(
             print(f"\n[EOS at step {step + 1}]")
             break
 
+        generated_text += token_str
         if token_str:
             print(token_str, end="", flush=True)
         else:
