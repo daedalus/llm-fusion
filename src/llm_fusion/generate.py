@@ -81,6 +81,7 @@ def generate(
     repetition_penalty: float = 1.0,
     condition: str = "direct",
     strategy: str = "average",
+    cascade_threshold: float = 0.5,
     ouro_path: str = "ByteDance/Ouro-1.4B",
     hrm_path: str = "sapientinc/HRM-Text-1B",
     base_dir: str | Path = "",
@@ -125,11 +126,16 @@ def generate(
             hrm_model_path, torch_dtype=dtype, device_map=device,
         )
 
-    fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, strategy)
+    fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, strategy,
+                   cascade_threshold)
     label = {"fused": "Fused", "ouro": "Ouro-1.4B", "hrm": "HRM-Text-1B"}[model]
     print(f"Model: {label}")
     if model == "fused":
-        print(f"Weights: Ouro={ouro_weight}  HRM={1-ouro_weight}")
+        print(f"Strategy: {strategy}")
+        if strategy == "average":
+            print(f"Weights: Ouro={ouro_weight}  HRM={1-ouro_weight}")
+        elif strategy == "cascade":
+            print(f"Cascade threshold: {cascade_threshold}")
     print(f"Generating up to {max_new_tokens} tokens (cond={condition})")
     print("-" * 60)
 

@@ -41,8 +41,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="direct", help="HRM condition tag",
     )
     parser.add_argument(
-        "--strategy", choices=["average", "product"], default="average",
-        help="Fusion strategy: average (weighted) or product (product of experts)",
+        "--strategy", choices=["average", "product", "min-entropy", "cascade"],
+        default="average",
+        help="Fusion strategy: average, product, min-entropy, or cascade",
+    )
+    parser.add_argument(
+        "--cascade-threshold", type=float, default=0.5,
+        help="Ouro top-prob threshold for cascade strategy (default: 0.5)",
     )
     return parser
 
@@ -66,6 +71,7 @@ def main() -> int:
         repetition_penalty=args.repetition_penalty,
         condition=args.condition,
         strategy=args.strategy,
+        cascade_threshold=args.cascade_threshold,
     )
     return 0
 

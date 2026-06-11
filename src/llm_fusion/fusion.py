@@ -31,6 +31,7 @@ class Fuser:
         top_k: int = 50,
         threshold: float = 0.01,
         strategy: str = "average",
+        cascade_threshold: float = 0.5,
     ):
         self.matcher = matcher
         self.ouro_tok = ouro_tok
@@ -39,9 +40,11 @@ class Fuser:
         self.hrm_weight = 1.0 - ouro_weight
         self.top_k = top_k
         self.threshold = threshold
-        if strategy not in ("average", "product"):
+        valid = ("average", "product", "min-entropy", "cascade")
+        if strategy not in valid:
             raise ValueError(f"Unknown strategy: {strategy!r}")
         self.strategy = strategy
+        self.cascade_threshold = cascade_threshold
 
     def _fuse_logits_average(
         self, ouro_logits: list[float], hrm_logits: list[float],
@@ -95,11 +98,67 @@ class Fuser:
         filtered = sorted(fused.items(), key=lambda x: -x[1])
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
 
+    @staticmethod
+    def _distribution_entropy(logits: list[float], k: int) -> float:
+        _, probs = softmax_top_k(logits, k)
+        if not probs:
+            return float("inf")
+        return -sum(p * math.log(max(p, 1e-10)) for p in probs)
+
+    def _fuse_logits_minentropy(
+        self, ouro_logits: list[float], hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        ouro_entropy = self._distribution_entropy(ouro_logits, self.top_k)
+        hrm_entropy = self._distribution_entropy(hrm_logits, self.top_k)
+
+        if hrm_entropy < ouro_entropy:
+            ids, probs = softmax_top_k(hrm_logits, self.top_k)
+            filtered = [(tid, p) for tid, p in zip(ids, probs) if p >= self.threshold]
+            return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+
+        ids, probs = softmax_top_k(ouro_logits, self.top_k)
+        fused: dict[int, float] = {}
+        for oid, prob in zip(ids, probs):
+            match = self.matcher.ouro_to_hrm(oid)
+            if not match.target_ids:
+                continue
+            share = prob / len(match.target_ids)
+            for tid in match.target_ids:
+                fused[tid] = fused.get(tid, 0.0) + share
+        filtered = [(tid, p) for tid, p in fused.items() if p >= self.threshold]
+        filtered.sort(key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+
+    def _fuse_logits_cascade(
+        self, ouro_logits: list[float], hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        ids, probs = softmax_top_k(ouro_logits, self.top_k)
+        if probs and probs[0] >= self.cascade_threshold:
+            fused: dict[int, float] = {}
+            for oid, prob in zip(ids, probs):
+                match = self.matcher.ouro_to_hrm(oid)
+                if not match.target_ids:
+                    continue
+                share = prob / len(match.target_ids)
+                for tid in match.target_ids:
+                    fused[tid] = fused.get(tid, 0.0) + share
+            filtered = [(tid, p) for tid, p in fused.items() if p >= self.threshold]
+            filtered.sort(key=lambda x: -x[1])
+            return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+
+        ids, probs = softmax_top_k(hrm_logits, self.top_k)
+        filtered = [(tid, p) for tid, p in zip(ids, probs) if p >= self.threshold]
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+
     def fuse_logits(
         self, ouro_logits: list[float], hrm_logits: list[float],
     ) -> list[tuple[int, float, str]]:
         if self.strategy == "product":
             return self._fuse_logits_product(ouro_logits, hrm_logits)
+        if self.strategy == "min-entropy":
+            return self._fuse_logits_minentropy(ouro_logits, hrm_logits)
+        if self.strategy == "cascade":
+            return self._fuse_logits_cascade(ouro_logits, hrm_logits)
         return self._fuse_logits_average(ouro_logits, hrm_logits)
 
     def sample_token(

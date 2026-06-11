@@ -26,6 +26,51 @@ def fuser(matcher) -> Fuser:
     return Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok)
 
 
+class TestCascade:
+    def test_cascade_uses_ouro_when_confident(self, matcher):
+        target = matcher.ouro_to_hrm(335)
+        if not target.target_ids:
+            pytest.skip("no HRM mapping for Ouro token 335")
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="cascade",
+                       cascade_threshold=0.5)
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 20.0
+        ouro_logits[0] = 0.1
+        hrm_logits[42] = 10.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        tids = {tid for tid, _, _ in results}
+        expected = set(target.target_ids)
+        assert tids & expected
+
+    def test_cascade_fallsback_to_hrm_when_uncertain(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="cascade",
+                       cascade_threshold=0.5)
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[0] = 0.1
+        ouro_logits[1] = 0.09
+        hrm_logits[371] = 10.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        tids = [tid for tid, _, _ in results]
+        assert 371 in tids
+
+    def test_cascade_always_ouro_at_zero_threshold(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="cascade",
+                       cascade_threshold=0.0)
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 0.01
+        hrm_logits[371] = 10.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(results) > 0
+
+    def test_cascade_empty_logits(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="cascade")
+        results = fuser.fuse_logits([], [])
+        assert results == []
+
+
 class TestSoftmaxTopK:
     def test_basic_top_k(self):
         logits = [0.0, 1.0, 2.0, 3.0]
@@ -100,6 +145,31 @@ class TestFuser:
         hrm_logits[371] = 5.0
         results = fuser.fuse_logits(ouro_logits, hrm_logits)
         assert len(results) > 0
+
+    def test_min_entropy_routes_to_hrm(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="min-entropy")
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        hrm_logits[371] = 20.0
+        hrm_logits[42] = 19.5
+        ouro_logits[0] = 0.1
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        tids = [tid for tid, _, _ in results]
+        assert 371 in tids or 42 in tids
+
+    def test_min_entropy_routes_to_ouro(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="min-entropy")
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 20.0
+        hrm_logits[0] = 0.1
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(results) > 0
+
+    def test_min_entropy_empty_logits(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="min-entropy")
+        results = fuser.fuse_logits([], [])
+        assert results == []
 
     def test_fuse_logits_product_no_overlap(self, matcher):
         fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="product",
