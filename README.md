@@ -3,10 +3,28 @@
 [![Python](https://img.shields.io/pypi/pyversions/llm-fusion.svg)](https://pypi.org/project/llm-fusion/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/master/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
+![LLM Fusion Architecture](docs/llm_fusion_architecture.svg)
+
 Fused autoregressive text completion using ByteDance Ouro-1.4B + Sapient HRM-Text-1B.
 
 Both models run under transformers 5.11.0. Fusion strategies operate in HRM's vocabulary space
 via bidirectional token ID matching.
+
+## Architecture highlights
+
+Token bridging is the hard part. The two models have completely different vocabularies
+(GPT-2 BPE with 49k tokens vs. Qwen2 BPE with 65k). The `TokenMatcher` handles this via a
+bidirectional lookup that first tries exact string matches, then decode→re-encode roundtrips,
+classifying each match as `exact`, `approx`, or `mismatch`. About 37k tokens map cleanly.
+The fusion always operates in HRM's vocabulary space.
+
+Five fusion strategies are implemented in clean, well-separated private methods on `Fuser`:
+
+- **average** — weighted softmax blend (default `ouro_weight=0.5`)
+- **product** — Product of Experts (multiplies probabilities, strongly penalizes tokens either model dislikes)
+- **min-entropy** — routes each token to whichever model is more confident
+- **cascade** — uses Ouro unless its top-1 probability falls below a threshold, then defers to HRM
+- **dynamic** — Ouro weight decays linearly from initial to final over the generation steps
 
 ## Install
 
