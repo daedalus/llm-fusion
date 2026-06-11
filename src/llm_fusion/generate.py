@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import sys
@@ -172,6 +173,8 @@ def generate(
     show_kl: bool = False,
     show_gain: bool = False,
     eval_text: str = "",
+    verbose: bool = False,
+    debug: bool = False,
     ouro_path: str = "ByteDance/Ouro-1.4B",
     hrm_path: str = "sapientinc/HRM-Text-1B",
     base_dir: str | Path = "",
@@ -186,6 +189,14 @@ def generate(
     bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
     ouro_tok_path = bd / "Ouro-1.4B/tokenizer.json"
     hrm_tok_path = bd / "HRM-Text-1B/tokenizer.json"
+
+    log = logging.getLogger(__name__)
+    if debug:
+        log.setLevel(logging.DEBUG)
+    elif verbose:
+        log.setLevel(logging.INFO)
+
+    log.info("Initializing token matcher from %s and %s", ouro_tok_path, hrm_tok_path)
     matcher = TokenMatcher(ouro_tok_path, hrm_tok_path)
     ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
     hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
@@ -195,14 +206,19 @@ def generate(
     load_ouro = model in ("fused", "ouro")
     load_hrm = model in ("fused", "hrm")
 
+    log.info("Device: %s, dtype: %s", device, dtype)
+    log.debug("load_ouro=%s, load_hrm=%s", load_ouro, load_hrm)
+
     print(f"Loading models on {device}...", file=sys.stderr)
     if load_ouro:
         if local:
             ouro_model_path = str(bd / "Ouro-1.4B")
         else:
             ouro_model_path = ouro_path
+        log.info("Loading Ouro model from %s", ouro_model_path)
         ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
         patch_ouro_model(ouro_config)
+        log.debug("Ouro config._attn_implementation set to 'eager'")
         ouro_model = AutoModelForCausalLM.from_pretrained(
             ouro_model_path,
             config=ouro_config,
@@ -210,16 +226,19 @@ def generate(
             device_map=device,
             trust_remote_code=True,
         )
+        log.info("Ouro model loaded")
     if load_hrm:
         if local:
             hrm_model_path = str(bd / "HRM-Text-1B")
         else:
             hrm_model_path = hrm_path
+        log.info("Loading HRM model from %s", hrm_model_path)
         hrm_model = AutoModelForCausalLM.from_pretrained(
             hrm_model_path,
             torch_dtype=dtype,
             device_map=device,
         )
+        log.info("HRM model loaded")
 
     if perplexity:
         print(f"Computing perplexity for {model}...")
@@ -329,6 +348,7 @@ def generate(
         ouro_cache = UniversalTransformerCache()
 
     for step in range(max_new_tokens):
+        log.debug("Step %d, generated_text length %d, generated_text=%s", step, len(generated_text), repr(generated_text[-40:]))
         if load_ouro:
             if model == "fused":
                 ouro_ids = ouro_prompt_ids + ouro_tok.encode(generated_text).ids
@@ -403,3 +423,4 @@ def generate(
     print()
     print("-" * 60)
     print(f"Generated {step + 1} tokens")
+    log.info("Generated %d tokens with model=%s strategy=%s", step + 1, model, strategy)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import sys
 
 from llm_fusion.generate import generate
 
@@ -105,12 +107,35 @@ def build_parser() -> argparse.ArgumentParser:
         dest="eval_text",
         help="Evaluate fusion against parents on a reference text",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Verbose output (INFO logging)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Debug output (DEBUG logging)",
+    )
     return parser
 
 
+def setup_logging(verbose: bool = False, debug: bool = False) -> None:
+    level = logging.DEBUG if debug else (logging.INFO if verbose else logging.WARNING)
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)-5s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+
 def main() -> int:
+
     parser = build_parser()
     args = parser.parse_args()
+    setup_logging(args.verbose, args.debug)
+
     if not args.prompt:
         parser.print_help()
         return 1
@@ -134,6 +159,8 @@ def main() -> int:
         "show_kl": args.show_kl,
         "show_gain": args.show_gain,
         "eval_text": args.eval_text,
+        "verbose": args.verbose,
+        "debug": args.debug,
     }
     generate(**gen_kwargs)
     return 0

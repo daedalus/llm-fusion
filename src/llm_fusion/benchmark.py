@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import sys
 import time
@@ -519,7 +520,7 @@ def format_robustness_table(
     return "\n".join(lines)
 
 
-def main() -> int:
+def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="LLM Fusion benchmarks")
@@ -531,7 +532,16 @@ def main() -> int:
         action="store_true",
         help="Run diverse robustness battery instead of speed benchmark",
     )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    parser.add_argument("--debug", action="store_true", help="Debug output")
     args = parser.parse_args()
+
+    level = logging.DEBUG if args.debug else (logging.INFO if args.verbose else logging.WARNING)
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)-5s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
 
     if args.robustness:
         print("Running robustness benchmark on diverse battery...", file=sys.stderr)
@@ -540,7 +550,7 @@ def main() -> int:
         results = run_robustness_benchmark(
             max_new_tokens=args.max_new_tokens,
             temperature=args.temp,
-            local=True,
+            _local=True,
         )
         print("\n" + format_robustness_table(results))
     else:
@@ -550,7 +560,6 @@ def main() -> int:
             temperature=args.temp,
         )
         print("\n" + format_table(results))
-    return 0
 
 
 if __name__ == "__main__":

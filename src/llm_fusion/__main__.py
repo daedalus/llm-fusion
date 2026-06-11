@@ -9,7 +9,8 @@ from llm_fusion.cli import main as cli_main
 def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "benchmark":
         sys.argv.pop(1)
-        return bench_main()
+        bench_main()
+        return 0
     return cli_main()
 
 
