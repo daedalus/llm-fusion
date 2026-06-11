@@ -199,7 +199,7 @@ lizard src/ --CCN=15
 
 ```bibtex
 @misc{clavijo2026llmfusion,
-  author       = {Dar{\'i}o Clavijo},
+  author       = {Dario Clavijo},
   title        = {llm-fusion: Fused Autoregressive Text Completion with Ouro-1.4B and HRM-Text-1B},
   year         = {2026},
   howpublished = {GitHub},
