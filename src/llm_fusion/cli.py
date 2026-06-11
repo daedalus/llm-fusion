@@ -57,6 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--dynamic-final-weight", type=float, default=0.2,
         help="Final Ouro weight for dynamic strategy (default: 0.2)",
     )
+    parser.add_argument(
+        "--perplexity", action="store_true",
+        help="Evaluate perplexity instead of generating",
+    )
     return parser
 
 
@@ -82,6 +86,7 @@ def main() -> int:
         cascade_threshold=args.cascade_threshold,
         dynamic_initial_weight=args.dynamic_initial_weight,
         dynamic_final_weight=args.dynamic_final_weight,
+        perplexity=args.perplexity,
     )
     generate(**gen_kwargs)
     return 0

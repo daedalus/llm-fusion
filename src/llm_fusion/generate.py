@@ -69,6 +69,73 @@ def sample_from_logits(
     return ids[-1], tok.decode([ids[-1]]), probs[-1]
 
 
+def compute_perplexity(
+    text: str,
+    model: Any,  # noqa: ANN401
+    tokenizer: Tokenizer,
+    device: str = "cpu",
+    stride: int = 512,
+) -> float:
+    import torch
+    input_ids = tokenizer.encode(text).ids
+    if not input_ids:
+        return float("inf")
+    nll = 0.0
+    n_tokens = 0
+    seq_len = len(input_ids)
+    for start in range(0, seq_len - 1, stride):
+        end = min(start + stride, seq_len)
+        chunk = input_ids[max(0, start - 1):end] if start > 0 else input_ids[:end]
+        inp = torch.tensor([chunk], device=device)
+        with torch.no_grad():
+            out = model(inp)
+        logits = out.logits[0]
+        shift_logits = logits[:-1]
+        shift_labels = inp[0, 1:]
+        nll += torch.nn.functional.cross_entropy(
+            shift_logits, shift_labels, reduction="none",
+        ).sum().item()
+        n_tokens += len(shift_labels)
+    return math.exp(nll / max(n_tokens, 1))
+
+
+def compute_fused_perplexity(
+    text: str,
+    ouro_model: Any,  # noqa: ANN401
+    hrm_model: Any,  # noqa: ANN401
+    ouro_tok: Tokenizer,
+    hrm_tok: Tokenizer,
+    fuser: Fuser,
+    device: str = "cpu",
+) -> float:
+    import torch
+    hrm_ids = hrm_tok.encode(text).ids
+    if len(hrm_ids) < 2:
+        return float("inf")
+    nll = 0.0
+    ouro_prompt_ids = ouro_tok.encode(text).ids
+    for t in range(1, len(hrm_ids)):
+        ouro_prefix = ouro_tok.encode(hrm_tok.decode(hrm_ids[:t])).ids or [0]
+        inp = torch.tensor([ouro_prefix], device=device)
+        with torch.no_grad():
+            ouro_out = ouro_model(inp)
+        ouro_logits = ouro_out.logits[0, -1, :].tolist()
+        hrm_inp = torch.tensor([hrm_ids[:t]], device=device)
+        hrm_tti = torch.ones(t, dtype=torch.long, device=device).unsqueeze(0)
+        with torch.no_grad():
+            hrm_out = hrm_model(hrm_inp, token_type_ids=hrm_tti)
+        hrm_logits = hrm_out.logits[0, -1, :].tolist()
+        candidates = fuser.fuse_logits(ouro_logits, hrm_logits)
+        target_tid = hrm_ids[t]
+        fused_prob = 0.0
+        for tid, p, _ in candidates:
+            if tid == target_tid:
+                fused_prob = p
+                break
+        nll -= math.log(max(fused_prob, 1e-10))
+    return math.exp(nll / (len(hrm_ids) - 1))
+
+
 def generate(
     text: str,
     max_new_tokens: int = 100,
@@ -84,6 +151,7 @@ def generate(
     cascade_threshold: float = 0.5,
     dynamic_initial_weight: float = 0.8,
     dynamic_final_weight: float = 0.2,
+    perplexity: bool = False,
     ouro_path: str = "ByteDance/Ouro-1.4B",
     hrm_path: str = "sapientinc/HRM-Text-1B",
     base_dir: str | Path = "",
@@ -127,6 +195,23 @@ def generate(
         hrm_model = AutoModelForCausalLM.from_pretrained(
             hrm_model_path, torch_dtype=dtype, device_map=device,
         )
+
+    if perplexity:
+        print(f"Computing perplexity for {model}...")
+        print("-" * 60)
+        if model == "fused":
+            fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, strategy,
+                           cascade_threshold, dynamic_initial_weight, dynamic_final_weight,
+                           0)
+            ppl = compute_fused_perplexity(text, ouro_model, hrm_model, ouro_tok, hrm_tok,
+                                            fuser, device)
+        else:
+            model_obj = ouro_model if load_ouro else hrm_model
+            tok = ouro_tok if load_ouro else hrm_tok
+            ppl = compute_perplexity(text, model_obj, tok, device)
+        print(f"Perplexity: {ppl:.2f}")
+        print("-" * 60)
+        return
 
     fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, strategy,
                    cascade_threshold, dynamic_initial_weight, dynamic_final_weight,
