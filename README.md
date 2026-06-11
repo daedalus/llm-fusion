@@ -31,7 +31,8 @@ kinds of text that actually holds.
 More broadly, this is a low-cost alternative to model merging or ensemble distillation. No
 retraining, no weight surgery — just run both models, bridge their vocabularies, and blend
 at inference time. The cost is speed (two forward passes per token); the payoff, if the
-hypothesis holds, is better calibration and fewer confidently wrong completions.
+hypothesis holds, is better calibration and fewer confidently wrong completions. Because a
+second opinion is free if you already have the weights.
 
 ## Architecture highlights
 
