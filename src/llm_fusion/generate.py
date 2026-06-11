@@ -18,12 +18,13 @@ OURO_EOS_ID = 0
 
 try:
     from ouro_cache_fix import UniversalTransformerCache  # noqa: F401
+
     HAS_OURO_CACHE = True
 except ImportError:
     HAS_OURO_CACHE = False
 
 
-def patch_ouro_model(config) -> None:
+def patch_ouro_model(config: Any) -> None:
     config._attn_implementation = "eager"
 
 
@@ -38,7 +39,9 @@ def strip_hrm_output(text: str) -> str:
 
 
 def apply_repetition_penalty(
-    logits: list[float], seen_ids: set[int], penalty: float,
+    logits: list[float],
+    seen_ids: set[int],
+    penalty: float,
 ) -> list[float]:
     if penalty == 1.0 or not seen_ids:
         return logits
@@ -51,9 +54,13 @@ def apply_repetition_penalty(
 
 
 def sample_from_logits(
-    logits: list[float], tok: Tokenizer, k: int, temperature: float,
+    logits: list[float],
+    tok: Tokenizer,
+    k: int,
+    temperature: float,
 ) -> tuple[int, str, float]:
     import random
+
     ids, probs = softmax_top_k(logits, k)
     if temperature <= 0 or len(ids) == 1:
         return ids[0], tok.decode([ids[0]]), probs[0]
@@ -79,6 +86,7 @@ def compute_perplexity(
     stride: int = 512,
 ) -> float:
     import torch
+
     input_ids = tokenizer.encode(text).ids
     if not input_ids:
         return float("inf")
@@ -87,16 +95,22 @@ def compute_perplexity(
     seq_len = len(input_ids)
     for start in range(0, seq_len - 1, stride):
         end = min(start + stride, seq_len)
-        chunk = input_ids[max(0, start - 1):end] if start > 0 else input_ids[:end]
+        chunk = input_ids[max(0, start - 1) : end] if start > 0 else input_ids[:end]
         inp = torch.tensor([chunk], device=device)
         with torch.no_grad():
             out = model(inp)
         logits = out.logits[0]
         shift_logits = logits[:-1]
         shift_labels = inp[0, 1:]
-        nll += torch.nn.functional.cross_entropy(
-            shift_logits, shift_labels, reduction="none",
-        ).sum().item()
+        nll += (
+            torch.nn.functional.cross_entropy(
+                shift_logits,
+                shift_labels,
+                reduction="none",
+            )
+            .sum()
+            .item()
+        )
         n_tokens += len(shift_labels)
     return math.exp(nll / max(n_tokens, 1))
 
@@ -111,11 +125,12 @@ def compute_fused_perplexity(
     device: str = "cpu",
 ) -> float:
     import torch
+
     hrm_ids = hrm_tok.encode(text).ids
     if len(hrm_ids) < 2:
         return float("inf")
     nll = 0.0
-    ouro_prompt_ids = ouro_tok.encode(text).ids
+    ouro_tok.encode(text).ids
     for t in range(1, len(hrm_ids)):
         ouro_prefix = ouro_tok.encode(hrm_tok.decode(hrm_ids[:t])).ids or [0]
         inp = torch.tensor([ouro_prefix], device=device)
@@ -189,8 +204,11 @@ def generate(
         ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
         patch_ouro_model(ouro_config)
         ouro_model = AutoModelForCausalLM.from_pretrained(
-            ouro_model_path, config=ouro_config, torch_dtype=dtype,
-            device_map=device, trust_remote_code=True,
+            ouro_model_path,
+            config=ouro_config,
+            torch_dtype=dtype,
+            device_map=device,
+            trust_remote_code=True,
         )
     if load_hrm:
         if local:
@@ -198,18 +216,31 @@ def generate(
         else:
             hrm_model_path = hrm_path
         hrm_model = AutoModelForCausalLM.from_pretrained(
-            hrm_model_path, torch_dtype=dtype, device_map=device,
+            hrm_model_path,
+            torch_dtype=dtype,
+            device_map=device,
         )
 
     if perplexity:
         print(f"Computing perplexity for {model}...")
         print("-" * 60)
         if model == "fused":
-            fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, strategy,
-                           cascade_threshold, dynamic_initial_weight, dynamic_final_weight,
-                           0)
-            ppl = compute_fused_perplexity(text, ouro_model, hrm_model, ouro_tok, hrm_tok,
-                                            fuser, device)
+            fuser = Fuser(
+                matcher,
+                ouro_tok,
+                hrm_tok,
+                ouro_weight,
+                top_k,
+                threshold,
+                strategy,
+                cascade_threshold,
+                dynamic_initial_weight,
+                dynamic_final_weight,
+                0,
+            )
+            ppl = compute_fused_perplexity(
+                text, ouro_model, hrm_model, ouro_tok, hrm_tok, fuser, device
+            )
         else:
             model_obj = ouro_model if load_ouro else hrm_model
             tok = ouro_tok if load_ouro else hrm_tok
@@ -222,16 +253,23 @@ def generate(
         print(f"Evaluating on {len(eval_text)} chars...")
         print("-" * 60)
         from llm_fusion.metrics import evaluate_text as _eval_fn
-        results = _eval_fn(eval_text, ouro_model, hrm_model, ouro_tok, hrm_tok,
-                            fuser if model == "fused" else None, device,
-                            max_new_tokens)
+
+        results = _eval_fn(
+            eval_text,
+            ouro_model,
+            hrm_model,
+            ouro_tok,
+            hrm_tok,
+            fuser if model == "fused" else None,
+            device,
+            max_new_tokens,
+        )
         print(f"  Tokens evaluated:   {results['n_tokens']}")
-        print(f"  Avg fusion gain:    {results['avg_fusion_gain']:+.4f}  "
-              f"(log-ratio vs best parent)")
-        print(f"  Fusion win rate:    {results['fusion_win_rate']:.1%}  "
-              f"(fusion beats best parent)")
-        print(f"  Oracle agreement:   {results['oracle_rate']:.1%}  "
-              f"(agreement with better parent)")
+        print(
+            f"  Avg fusion gain:    {results['avg_fusion_gain']:+.4f}  (log-ratio vs best parent)"
+        )
+        print(f"  Fusion win rate:    {results['fusion_win_rate']:.1%}  (fusion beats best parent)")
+        print(f"  Oracle agreement:   {results['oracle_rate']:.1%}  (agreement with better parent)")
         print(f"  Ouro PPL:           {results['ouro_ppl']:.2f}")
         print(f"  HRM PPL:            {results['hrm_ppl']:.2f}")
         print(f"  Fused PPL:          {results['fused_ppl']:.2f}")
@@ -240,19 +278,31 @@ def generate(
         print("-" * 60)
         return
 
-    fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, strategy,
-                   cascade_threshold, dynamic_initial_weight, dynamic_final_weight,
-                   max_new_tokens)
+    fuser = Fuser(
+        matcher,
+        ouro_tok,
+        hrm_tok,
+        ouro_weight,
+        top_k,
+        threshold,
+        strategy,
+        cascade_threshold,
+        dynamic_initial_weight,
+        dynamic_final_weight,
+        max_new_tokens,
+    )
     label = {"fused": "Fused", "ouro": "Ouro-1.4B", "hrm": "HRM-Text-1B"}[model]
     print(f"Model: {label}")
     if model == "fused":
         print(f"Strategy: {strategy}")
         if strategy == "average":
-            print(f"Weights: Ouro={ouro_weight}  HRM={1-ouro_weight}")
+            print(f"Weights: Ouro={ouro_weight}  HRM={1 - ouro_weight}")
         elif strategy == "cascade":
             print(f"Cascade threshold: {cascade_threshold}")
         elif strategy == "dynamic":
-            print(f"Ouro weight: {dynamic_initial_weight} -> {dynamic_final_weight} over {max_new_tokens} steps")
+            print(
+                f"Ouro weight: {dynamic_initial_weight} -> {dynamic_final_weight} over {max_new_tokens} steps"
+            )
     print(f"Generating up to {max_new_tokens} tokens (cond={condition})")
     print("-" * 60)
 
@@ -267,8 +317,10 @@ def generate(
     ouro_gen_ids: set[int] = set()
     ouro_ids = list(ouro_prompt_ids) if load_ouro else []
 
-    print(f"Prompt (Ouro: {len(ouro_prompt_ids) if load_ouro else 0} tok, "
-          f"HRM: {len(hrm_ids) if load_hrm else 0} tok)")
+    print(
+        f"Prompt (Ouro: {len(ouro_prompt_ids) if load_ouro else 0} tok, "
+        f"HRM: {len(hrm_ids) if load_hrm else 0} tok)"
+    )
     print(text)
     print("-" * 60)
 
@@ -291,7 +343,9 @@ def generate(
                 )
             ouro_logits = ouro_out.logits[0, -1, :].tolist()
             if repetition_penalty != 1.0:
-                ouro_logits = apply_repetition_penalty(ouro_logits, ouro_gen_ids, repetition_penalty)
+                ouro_logits = apply_repetition_penalty(
+                    ouro_logits, ouro_gen_ids, repetition_penalty
+                )
 
         if load_hrm:
             hrm_tti = torch.ones(len(hrm_ids), dtype=torch.long, device=device).unsqueeze(0)

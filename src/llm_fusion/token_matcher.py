@@ -29,7 +29,7 @@ class TokenMatcher:
         self,
         ouro_tokenizer_path: str | Path = "Ouro-1.4B/tokenizer.json",
         hrm_tokenizer_path: str | Path = "HRM-Text-1B/tokenizer.json",
-    ):
+    ) -> None:
         self.ouro_path = Path(ouro_tokenizer_path)
         self.hrm_path = Path(hrm_tokenizer_path)
         self._check_dirs()
@@ -51,9 +51,7 @@ class TokenMatcher:
             if not p.exists():
                 missing.append(str(p))
         if missing:
-            raise FileNotFoundError(
-                f"Missing tokenizer files: {', '.join(missing)}"
-            )
+            raise FileNotFoundError(f"Missing tokenizer files: {', '.join(missing)}")
 
     def _is_special(self, token_id: int, src: str) -> bool:
         specials = self.ouro_special if src == "ouro" else self.hrm_special
@@ -104,7 +102,6 @@ class TokenMatcher:
         dst_vocab = self.hrm_vocab if src == "ouro" else self.ouro_vocab
         src_tok = self.ouro_tok if src == "ouro" else self.hrm_tok
         dst_tok = self.hrm_tok if src == "ouro" else self.ouro_tok
-        dst_name = "hrm" if src == "ouro" else "ouro"
 
         token_str = src_id_to_str.get(token_id)
         if token_str is None:
@@ -114,7 +111,8 @@ class TokenMatcher:
             target_id = self._special_crosswalk(token_str, src, dst)
             if target_id is not None:
                 return Match(
-                    "exact", [target_id],
+                    "exact",
+                    [target_id],
                     source_str=token_str,
                     target_str=dst_tok.decode([target_id], skip_special_tokens=False),
                     note="special token",
@@ -130,7 +128,8 @@ class TokenMatcher:
 
         if not target_ids:
             return Match(
-                "approx", [],
+                "approx",
+                [],
                 source_str=token_str,
                 target_str="",
                 note=f"encode({decoded!r}) -> empty",
@@ -150,14 +149,18 @@ class TokenMatcher:
     def map_sequence(self, token_ids: list[int], src: str) -> Match:
         src_tok = self.ouro_tok if src == "ouro" else self.hrm_tok
         dst_tok = self.hrm_tok if src == "ouro" else self.ouro_tok
-        dst_name = "hrm" if src == "ouro" else "ouro"
 
         decoded = src_tok.decode(token_ids, skip_special_tokens=False)
         target_ids = dst_tok.encode(decoded).ids
 
         if not target_ids:
-            return Match("approx", [], source_str=decoded, target_str="",
-                         note=f"encode({decoded!r}) -> empty")
+            return Match(
+                "approx",
+                [],
+                source_str=decoded,
+                target_str="",
+                note=f"encode({decoded!r}) -> empty",
+            )
 
         target_str = dst_tok.decode(target_ids, skip_special_tokens=False)
         re_encoded = src_tok.encode(target_str).ids
@@ -194,6 +197,8 @@ class TokenMatcher:
         print("Token Matcher: Ouro-1.4B <-> HRM-Text-1B")
         print(f"  Ouro vocab: {len(self.ouro_vocab):>5}  ({len(self.ouro_special):>2} special)")
         print(f"  HRM  vocab: {len(self.hrm_vocab):>5}  ({len(self.hrm_special):>2} special)")
-        print(f"  Shared special tokens: "
-              f"{len(set(self.ouro_special.values()) & set(self.hrm_special.values()))}")
+        print(
+            f"  Shared special tokens: "
+            f"{len(set(self.ouro_special.values()) & set(self.hrm_special.values()))}"
+        )
         print()

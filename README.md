@@ -1,5 +1,8 @@
 # llm-fusion
 
+[![Python](https://img.shields.io/pypi/pyversions/llm-fusion.svg)](https://pypi.org/project/llm-fusion/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/master/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 Fused autoregressive text completion using ByteDance Ouro-1.4B + Sapient HRM-Text-1B.
 
 Both models run under transformers 5.11.0. Fusion strategies operate in HRM's vocabulary space
@@ -156,9 +159,38 @@ See `AGENTS.md` for details.
 │   ├── metrics.py             # Fusion quality metrics (gain, win rate, eval)
 │   ├── benchmark.py           # Speed benchmarks + robustness battery
 │   ├── token_matcher.py       # Bidirectional token ID matcher
-│   ├── benchmark.py           # Speed/memory benchmark runner
 │   └── py.typed               # Type hints marker
-├── tests/                     # Pytest suite (73+ tests)
+├── tests/                     # Pytest suite (96+ tests)
 ├── Ouro-1.4B/                 # Model weights + patched modeling_ouro.py
 └── HRM-Text-1B/               # Model weights
+```
+
+## Development
+
+```bash
+git clone https://github.com/daedalus/LLM_EXPERIMENT.git
+cd LLM_EXPERIMENT
+pip install -e ".[dev,test,lint]"
+
+# run tests
+pytest
+
+# format
+ruff format src/ tests/
+
+# format markdown
+mdformat .
+
+# lint + type check
+prospector --with-tool ruff --with-tool mypy --with-tool pylint src/
+ruff check src/ tests/
+
+# security scan
+opengrep --config=auto --severity=ERROR src/
+
+# dead code detection
+vulture --min-confidence 90 src/
+
+# complexity analysis
+lizard src/ --CCN=15
 ```

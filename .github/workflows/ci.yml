@@ -19,10 +19,12 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Install dependencies
         run: uv pip install --system -e ".[lint]"
-      - name: Run ruff format
+      - name: Run ruff format check
         run: ruff format --check src/ tests/
       - name: Run ruff check
         run: ruff check src/ tests/
+      - name: Run mdformat
+        run: mdformat --check .
 
   test:
     runs-on: ubuntu-latest
@@ -39,5 +41,27 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Install dependencies
         run: uv pip install --system -e ".[test]"
-      - name: Run tests
-        run: pytest --tb=short -q
+      - name: Run tests with coverage
+        run: pytest --cov --cov-report=xml --cov-report=term-missing
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build package
+        run: |
+          uv pip install --system build
+          python -m build
+      - name: Check package
+        run: uv pip install --system twine && python -m twine check dist/*

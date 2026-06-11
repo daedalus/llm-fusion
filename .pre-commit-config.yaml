@@ -6,6 +6,46 @@ repos:
       - id: ruff
         args: [--fix]
 
+  - repo: https://github.com/executablebooks/mdformat
+    rev: v0.7.22
+    hooks:
+      - id: mdformat
+
+  - repo: https://github.com/landscapeio/prospector-pre-commit
+    rev: v1.18.0
+    hooks:
+      - id: prospector
+        additional_dependencies:
+          - ".[with_ruff,with_mypy]"
+        args: [--with-tool=ruff, --with-tool=mypy, --with-tool=pylint, --path=src/]
+
+  - repo: local
+    hooks:
+      - id: opengrep
+        name: Opengrep - Security and Pattern Scanning
+        entry: opengrep
+        args: [--config=auto, --severity=ERROR, src/]
+        language: python
+        types: [python]
+        additional_dependencies: ["opengrep"]
+
+  - repo: https://github.com/jendrikseipp/vulture
+    rev: v2.11
+    hooks:
+      - id: vulture
+        args: [--min-confidence=90, src/]
+
+  - repo: local
+    hooks:
+      - id: lizard
+        name: Lizard - Code Complexity Analysis
+        entry: lizard
+        args: [--CCN=15, src/]
+        language: python
+        types: [python]
+        additional_dependencies: ["lizard"]
+        stages: [pre-commit]
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:

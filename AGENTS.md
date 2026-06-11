@@ -30,6 +30,46 @@ pytest -v --tb=short --cov=src
 
 Coverage floor: 50% (many branches in `generate.py` require loading ~5GB model weights which isn't feasible in CI).
 
+## Development Commands
+
+```bash
+# Setup
+pip install -e ".[dev,test,lint]"
+
+# Test
+pytest -v --tb=short --cov=src
+
+# Format
+ruff format src/ tests/
+
+# Format markdown
+mdformat .
+
+# Lint + type check (prospector runs ruff check + mypy + pylint together)
+prospector --with-tool ruff --with-tool mypy --with-tool pylint src/
+ruff check src/ tests/
+
+# Security
+opengrep --config=auto --severity=ERROR src/
+
+# Dead code detection
+vulture --min-confidence 90 src/
+
+# Code complexity
+lizard src/ --CCN=15
+
+# Pre-commit
+pre-commit run --all-files
+```
+
+## Release
+
+```bash
+./tools/release.sh          # bump patch
+./tools/release.sh minor
+./tools/release.sh major
+```
+
 ## Package Structure
 
 ```

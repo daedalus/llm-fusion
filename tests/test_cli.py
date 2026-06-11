@@ -6,7 +6,7 @@ from llm_fusion.cli import build_parser
 
 
 class TestBuildParser:
-    def test_parser_defaults(self):
+    def test_parser_defaults(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["hello world"])
         assert args.prompt == "hello world"
@@ -19,24 +19,33 @@ class TestBuildParser:
         assert args.max_new_tokens == 100
         assert args.local is False
 
-    def test_parser_no_prompt(self):
+    def test_parser_no_prompt(self) -> None:
         parser = build_parser()
         args = parser.parse_args([])
         assert args.prompt is None
 
-    def test_parser_custom_values(self):
+    def test_parser_custom_values(self) -> None:
         parser = build_parser()
-        args = parser.parse_args([
-            "--model", "ouro",
-            "--temp", "0.5",
-            "--top-k", "10",
-            "--ouro-weight", "0.3",
-            "--rep-penalty", "1.2",
-            "--condition", "cot",
-            "-n", "50",
-            "--local",
-            "test prompt",
-        ])
+        args = parser.parse_args(
+            [
+                "--model",
+                "ouro",
+                "--temp",
+                "0.5",
+                "--top-k",
+                "10",
+                "--ouro-weight",
+                "0.3",
+                "--rep-penalty",
+                "1.2",
+                "--condition",
+                "cot",
+                "-n",
+                "50",
+                "--local",
+                "test prompt",
+            ]
+        )
         assert args.model == "ouro"
         assert args.temperature == 0.5
         assert args.top_k == 10
@@ -47,19 +56,19 @@ class TestBuildParser:
         assert args.local is True
         assert args.prompt == "test prompt"
 
-    def test_parser_all_models(self):
+    def test_parser_all_models(self) -> None:
         parser = build_parser()
         for m in ["fused", "ouro", "hrm"]:
             args = parser.parse_args(["--model", m, "p"])
             assert args.model == m
 
-    def test_parser_all_conditions(self):
+    def test_parser_all_conditions(self) -> None:
         parser = build_parser()
         for c in ["direct", "cot", "noisy", "synth"]:
             args = parser.parse_args(["--condition", c, "p"])
             assert args.condition == c
 
-    def test_parser_short_model_flag(self):
+    def test_parser_short_model_flag(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["-m", "ouro", "p"])
         assert args.model == "ouro"

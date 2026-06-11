@@ -13,42 +13,79 @@ ROBUSTNESS_BATTERY: list[dict[str, str]] = [
     # Factual / knowledge
     {"prompt": "The capital of France is", "category": "factual", "subdomain": "geography"},
     {"prompt": "The boiling point of water is", "category": "factual", "subdomain": "science"},
-    {"prompt": "Albert Einstein developed the theory of", "category": "factual", "subdomain": "physics"},
+    {
+        "prompt": "Albert Einstein developed the theory of",
+        "category": "factual",
+        "subdomain": "physics",
+    },
     {"prompt": "The chemical symbol for gold is", "category": "factual", "subdomain": "chemistry"},
-    {"prompt": "The largest planet in our solar system is", "category": "factual", "subdomain": "astronomy"},
-
+    {
+        "prompt": "The largest planet in our solar system is",
+        "category": "factual",
+        "subdomain": "astronomy",
+    },
     # Reasoning / common sense
-    {"prompt": "If all humans are mortal and Socrates is human, then", "category": "reasoning", "subdomain": "logic"},
+    {
+        "prompt": "If all humans are mortal and Socrates is human, then",
+        "category": "reasoning",
+        "subdomain": "logic",
+    },
     {"prompt": "A ball thrown in the air will", "category": "reasoning", "subdomain": "physics"},
-    {"prompt": "If it rains, the ground gets wet. The ground is wet, therefore", "category": "reasoning", "subdomain": "logic"},
-    {"prompt": "A triangle has three sides. A square has", "category": "reasoning", "subdomain": "geometry"},
-
+    {
+        "prompt": "If it rains, the ground gets wet. The ground is wet, therefore",
+        "category": "reasoning",
+        "subdomain": "logic",
+    },
+    {
+        "prompt": "A triangle has three sides. A square has",
+        "category": "reasoning",
+        "subdomain": "geometry",
+    },
     # Math / arithmetic
     {"prompt": "2 + 2 =", "category": "math", "subdomain": "arithmetic"},
     {"prompt": "The square root of 144 is", "category": "math", "subdomain": "algebra"},
     {"prompt": "10 factorial is", "category": "math", "subdomain": "combinatorics"},
-    {"prompt": "If x = 5 and y = 3, then x * y + 2 =", "category": "math", "subdomain": "arithmetic"},
-
+    {
+        "prompt": "If x = 5 and y = 3, then x * y + 2 =",
+        "category": "math",
+        "subdomain": "arithmetic",
+    },
     # Code
     {"prompt": "def hello_world():\n    print(", "category": "code", "subdomain": "python"},
     {"prompt": "for i in range(10):\n    print(", "category": "code", "subdomain": "python"},
-
     # Creative / storytelling
     {"prompt": "Once upon a time", "category": "creative", "subdomain": "story"},
     {"prompt": "In a galaxy far far away", "category": "creative", "subdomain": "story"},
-    {"prompt": "The old man walked to the edge of the cliff and", "category": "creative", "subdomain": "narrative"},
-
+    {
+        "prompt": "The old man walked to the edge of the cliff and",
+        "category": "creative",
+        "subdomain": "narrative",
+    },
     # Instruction following
-    {"prompt": "List three things you need to", "category": "instruction", "subdomain": "procedural"},
-    {"prompt": "Explain the process of photosynthesis in", "category": "instruction", "subdomain": "explanation"},
-
+    {
+        "prompt": "List three things you need to",
+        "category": "instruction",
+        "subdomain": "procedural",
+    },
+    {
+        "prompt": "Explain the process of photosynthesis in",
+        "category": "instruction",
+        "subdomain": "explanation",
+    },
     # Multilingual
     {"prompt": "Hola, ¿cómo estás?", "category": "multilingual", "subdomain": "spanish"},
     {"prompt": "Bonjour, comment allez-vous?", "category": "multilingual", "subdomain": "french"},
-
     # Domain specific
-    {"prompt": "In quantum mechanics, the uncertainty principle states that", "category": "domain", "subdomain": "physics"},
-    {"prompt": "The law of supply and demand states that", "category": "domain", "subdomain": "economics"},
+    {
+        "prompt": "In quantum mechanics, the uncertainty principle states that",
+        "category": "domain",
+        "subdomain": "physics",
+    },
+    {
+        "prompt": "The law of supply and demand states that",
+        "category": "domain",
+        "subdomain": "economics",
+    },
     {"prompt": "The capital of Brazil is", "category": "factual", "subdomain": "geography"},
     {"prompt": "Python is a", "category": "domain", "subdomain": "programming"},
 ]
@@ -70,12 +107,14 @@ class BenchmarkResult:
 def maybe_get_memory_mb() -> float:
     try:
         import torch
+
         if torch.cuda.is_available():
             return torch.cuda.max_memory_allocated() / 1e6
     except Exception:
         pass
     try:
         import psutil
+
         return psutil.Process().memory_info().rss / 1e6
     except Exception:
         return 0.0
@@ -134,14 +173,19 @@ def run_benchmark(
         ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
         patch_ouro_model(ouro_config)
         ouro_model = AutoModelForCausalLM.from_pretrained(
-            ouro_model_path, config=ouro_config, torch_dtype=dtype,
-            device_map=device, trust_remote_code=True,
+            ouro_model_path,
+            config=ouro_config,
+            torch_dtype=dtype,
+            device_map=device,
+            trust_remote_code=True,
         )
 
     if needs_hrm:
         hrm_model_path = str(bd / "HRM-Text-1B")
         hrm_model = AutoModelForCausalLM.from_pretrained(
-            hrm_model_path, torch_dtype=dtype, device_map=device,
+            hrm_model_path,
+            torch_dtype=dtype,
+            device_map=device,
         )
 
     results: list[BenchmarkResult] = []
@@ -183,7 +227,9 @@ def run_benchmark(
 
             if model in ("fused", "hrm"):
                 if model == "fused":
-                    hrm_tti = torch.ones(len(hrm_ids_list), dtype=torch.long, device=device).unsqueeze(0)
+                    hrm_tti = torch.ones(
+                        len(hrm_ids_list), dtype=torch.long, device=device
+                    ).unsqueeze(0)
                     with torch.no_grad():
                         hrm_out = hrm_model(
                             input_ids=torch.tensor([hrm_ids_list], device=device),
@@ -198,11 +244,13 @@ def run_benchmark(
                 hrm_gen_ids.add(tid)
             elif model == "ouro":
                 from llm_fusion.generate import sample_from_logits
+
                 tid, token_str, prob = sample_from_logits(ouro_logits, ouro_tok, top_k, temperature)
                 ouro_ids.append(tid)
                 ouro_gen_ids.add(tid)
             elif model == "hrm":
                 from llm_fusion.generate import sample_from_logits
+
                 tid, token_str, prob = sample_from_logits(hrm_logits, hrm_tok, top_k, temperature)
                 hrm_ids_list.append(tid)
                 hrm_gen_ids.add(tid)
@@ -222,9 +270,11 @@ def run_benchmark(
         results.append(r)
 
         label = f"{model}/{strategy}"
-        print(f"  {label:30s}  {r.tokens_per_sec:7.1f} tok/s  "
-              f"TTFT={r.ttft_s*1000:.0f}ms  mem={r.memory_mb:.0f}MB",
-              file=sys.stderr)
+        print(
+            f"  {label:30s}  {r.tokens_per_sec:7.1f} tok/s  "
+            f"TTFT={r.ttft_s * 1000:.0f}ms  mem={r.memory_mb:.0f}MB",
+            file=sys.stderr,
+        )
 
     return results
 
@@ -235,8 +285,10 @@ def format_table(results: list[BenchmarkResult]) -> str:
     lines.append("-" * 65)
     for r in results:
         label = f"{r.model}/{r.strategy}"
-        lines.append(f"{label:30s}  {r.tokens_per_sec:7.1f}  {r.ttft_s*1000:4.0f}ms  "
-                     f"{r.tokens_generated:5d}   {r.memory_mb:5.0f}MB")
+        lines.append(
+            f"{label:30s}  {r.tokens_per_sec:7.1f}  {r.ttft_s * 1000:4.0f}ms  "
+            f"{r.tokens_generated:5d}   {r.memory_mb:5.0f}MB"
+        )
     return "\n".join(lines)
 
 
@@ -295,13 +347,18 @@ def run_robustness_benchmark(
     ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
     patch_ouro_model(ouro_config)
     ouro_model = AutoModelForCausalLM.from_pretrained(
-        ouro_model_path, config=ouro_config, torch_dtype=dtype,
-        device_map=device, trust_remote_code=True,
+        ouro_model_path,
+        config=ouro_config,
+        torch_dtype=dtype,
+        device_map=device,
+        trust_remote_code=True,
     )
 
     hrm_model_path = str(bd / "HRM-Text-1B")
     hrm_model = AutoModelForCausalLM.from_pretrained(
-        hrm_model_path, torch_dtype=dtype, device_map=device,
+        hrm_model_path,
+        torch_dtype=dtype,
+        device_map=device,
     )
 
     fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, "average")
@@ -328,7 +385,11 @@ def run_robustness_benchmark(
         generated_text = ""
 
         for step in range(min(max_new_tokens, 30)):
-            ouro_prefix_ids = ouro_prompt_ids + ouro_tok.encode(generated_text).ids if generated_text else ouro_prompt_ids
+            ouro_prefix_ids = (
+                ouro_prompt_ids + ouro_tok.encode(generated_text).ids
+                if generated_text
+                else ouro_prompt_ids
+            )
             with torch.no_grad():
                 ouro_out = ouro_model(
                     input_ids=torch.tensor([ouro_prefix_ids], device=device),
@@ -339,7 +400,9 @@ def run_robustness_benchmark(
             with torch.no_grad():
                 hrm_out = hrm_model(
                     input_ids=torch.tensor([hrm_input_ids], device=device),
-                    token_type_ids=torch.ones(len(hrm_input_ids), dtype=torch.long, device=device).unsqueeze(0),
+                    token_type_ids=torch.ones(
+                        len(hrm_input_ids), dtype=torch.long, device=device
+                    ).unsqueeze(0),
                 )
             hrm_logits = hrm_out.logits[0, -1, :].tolist()
 
@@ -369,21 +432,23 @@ def run_robustness_benchmark(
         ouro_ppl = _quick_ppl(prompt, ouro_model, ouro_tok, device)
         hrm_ppl = _quick_ppl(prompt, hrm_model, hrm_tok, device)
 
-        results.append(RobustnessResult(
-            prompt=prompt[:60],
-            category=cat,
-            subdomain=sub,
-            ouro_ppl=ouro_ppl,
-            hrm_ppl=hrm_ppl,
-            fused_ppl=(ouro_ppl + hrm_ppl) / 2,
-            avg_fusion_gain=total_gain / max(n_steps, 1),
-            fusion_win_rate=fusion_wins / max(n_steps, 1),
-            avg_kl_oh=total_kl_oh / max(n_steps, 1),
-            avg_kl_ho=total_kl_ho / max(n_steps, 1),
-            ouro_entropy=-sum(p * math.log(max(p, 1e-10)) for p in ouro_probs),
-            hrm_entropy=-sum(p * math.log(max(p, 1e-10)) for p in hrm_probs),
-            generated_len=n_steps,
-        ))
+        results.append(
+            RobustnessResult(
+                prompt=prompt[:60],
+                category=cat,
+                subdomain=sub,
+                ouro_ppl=ouro_ppl,
+                hrm_ppl=hrm_ppl,
+                fused_ppl=(ouro_ppl + hrm_ppl) / 2,
+                avg_fusion_gain=total_gain / max(n_steps, 1),
+                fusion_win_rate=fusion_wins / max(n_steps, 1),
+                avg_kl_oh=total_kl_oh / max(n_steps, 1),
+                avg_kl_ho=total_kl_ho / max(n_steps, 1),
+                ouro_entropy=-sum(p * math.log(max(p, 1e-10)) for p in ouro_probs),
+                hrm_entropy=-sum(p * math.log(max(p, 1e-10)) for p in hrm_probs),
+                generated_len=n_steps,
+            )
+        )
 
     return results
 
@@ -391,6 +456,7 @@ def run_robustness_benchmark(
 def _quick_ppl(text: str, model: Any, tok: Any, device: str) -> float:
     """Compute perplexity quickly — single forward pass over the whole sequence."""
     import torch
+
     ids = tok.encode(text).ids
     if len(ids) < 2:
         return float("inf")
@@ -426,9 +492,13 @@ def format_robustness_table(
         avg_kl = sum(r.avg_kl_oh for r in items) / n
 
         lines.append(f"\n  [{group_name}]  ({n} prompts)")
-        lines.append(f"    {'Metric':25s}  {'Ouro':>8s}  {'HRM':>8s}  {'Fused':>8s}  {'Fusion':>8s}")
-        lines.append(f"    {'-'*25}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*8}")
-        lines.append(f"    {'Perplexity':25s}  {avg_ouro_ppl:8.1f}  {avg_hrm_ppl:8.1f}  {avg_fused_ppl:8.1f}  {'':>8s}")
+        lines.append(
+            f"    {'Metric':25s}  {'Ouro':>8s}  {'HRM':>8s}  {'Fused':>8s}  {'Fusion':>8s}"
+        )
+        lines.append(f"    {'-' * 25}  {'-' * 8}  {'-' * 8}  {'-' * 8}  {'-' * 8}")
+        lines.append(
+            f"    {'Perplexity':25s}  {avg_ouro_ppl:8.1f}  {avg_hrm_ppl:8.1f}  {avg_fused_ppl:8.1f}  {'':>8s}"
+        )
         lines.append(f"    {'Fusion Gain':25s}  {'':>8s}  {'':>8s}  {'':>8s}  {avg_gain:+8.3f}")
         lines.append(f"    {'Fusion Win Rate':25s}  {'':>8s}  {'':>8s}  {'':>8s}  {avg_win:7.1%}")
         lines.append(f"    {'Avg KL(O||H)':25s}  {'':>8s}  {'':>8s}  {'':>8s}  {avg_kl:8.2f}")
@@ -440,22 +510,27 @@ def format_robustness_table(
         all_kl = [r.avg_kl_oh for r in results]
         mean_gain = sum(all_gains) / len(all_gains)
         lines.append(f"    Mean fusion gain:  {mean_gain:+.4f}")
-        lines.append(f"    Mean fusion win:   {sum(all_wins)/len(all_wins):.1%}")
-        lines.append(f"    Mean KL(O||H):     {sum(all_kl)/len(all_kl):.2f}")
-        lines.append(f"    Fusion outperforms best parent on avg: "
-                     f"{'YES' if mean_gain > 0 else 'NO'}")
+        lines.append(f"    Mean fusion win:   {sum(all_wins) / len(all_wins):.1%}")
+        lines.append(f"    Mean KL(O||H):     {sum(all_kl) / len(all_kl):.2f}")
+        lines.append(
+            f"    Fusion outperforms best parent on avg: {'YES' if mean_gain > 0 else 'NO'}"
+        )
 
     return "\n".join(lines)
 
 
 def main() -> int:
     import argparse
+
     parser = argparse.ArgumentParser(description="LLM Fusion benchmarks")
     parser.add_argument("--prompt", default="The quick brown fox jumps over the lazy dog.")
     parser.add_argument("-n", "--max-new-tokens", type=int, default=50)
     parser.add_argument("--temp", type=float, default=0.0)
-    parser.add_argument("--robustness", action="store_true",
-                        help="Run diverse robustness battery instead of speed benchmark")
+    parser.add_argument(
+        "--robustness",
+        action="store_true",
+        help="Run diverse robustness battery instead of speed benchmark",
+    )
     args = parser.parse_args()
 
     if args.robustness:

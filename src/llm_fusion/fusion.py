@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
-from tokenizers import Tokenizer
+if TYPE_CHECKING:
+    from tokenizers import Tokenizer
 
-from llm_fusion.token_matcher import TokenMatcher
+    from llm_fusion.token_matcher import TokenMatcher
 
 
 def compute_kl(p: dict[int, float], q: dict[int, float]) -> float:
@@ -48,7 +50,7 @@ class Fuser:
         dynamic_initial_weight: float = 0.8,
         dynamic_final_weight: float = 0.2,
         dynamic_total_steps: int = 100,
-    ):
+    ) -> None:
         self.matcher = matcher
         self.ouro_tok = ouro_tok
         self.hrm_tok = hrm_tok
@@ -67,7 +69,9 @@ class Fuser:
         self.dynamic_total_steps = dynamic_total_steps
 
     def _fuse_logits_average(
-        self, ouro_logits: list[float], hrm_logits: list[float],
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
         ouro_weight: float | None = None,
         hrm_weight: float | None = None,
     ) -> list[tuple[int, float, str]]:
@@ -94,7 +98,9 @@ class Fuser:
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
 
     def _fuse_logits_product(
-        self, ouro_logits: list[float], hrm_logits: list[float],
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
     ) -> list[tuple[int, float, str]]:
         ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
         hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
@@ -130,7 +136,9 @@ class Fuser:
         return -sum(p * math.log(max(p, 1e-10)) for p in probs)
 
     def _fuse_logits_minentropy(
-        self, ouro_logits: list[float], hrm_logits: list[float],
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
     ) -> list[tuple[int, float, str]]:
         ouro_entropy = self._distribution_entropy(ouro_logits, self.top_k)
         hrm_entropy = self._distribution_entropy(hrm_logits, self.top_k)
@@ -154,7 +162,9 @@ class Fuser:
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
 
     def _fuse_logits_cascade(
-        self, ouro_logits: list[float], hrm_logits: list[float],
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
     ) -> list[tuple[int, float, str]]:
         ids, probs = softmax_top_k(ouro_logits, self.top_k)
         if probs and probs[0] >= self.cascade_threshold:
@@ -175,17 +185,23 @@ class Fuser:
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
 
     def _fuse_logits_dynamic(
-        self, ouro_logits: list[float], hrm_logits: list[float],
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
     ) -> list[tuple[int, float, str]]:
         t = self.dynamic_total_steps
         s = min(self.current_step, t)
-        ow = self.dynamic_initial_weight - (self.dynamic_initial_weight - self.dynamic_final_weight) * s / max(t, 1)
+        ow = self.dynamic_initial_weight - (
+            self.dynamic_initial_weight - self.dynamic_final_weight
+        ) * s / max(t, 1)
         ow = max(self.dynamic_final_weight, min(self.dynamic_initial_weight, ow))
         hw = 1.0 - ow
         return self._fuse_logits_average(ouro_logits, hrm_logits, ow, hw)
 
     def fuse_logits(
-        self, ouro_logits: list[float], hrm_logits: list[float],
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
     ) -> list[tuple[int, float, str]]:
         if self.strategy == "product":
             return self._fuse_logits_product(ouro_logits, hrm_logits)
@@ -198,7 +214,9 @@ class Fuser:
         return self._fuse_logits_average(ouro_logits, hrm_logits)
 
     def model_distributions(
-        self, ouro_logits: list[float], hrm_logits: list[float],
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
     ) -> tuple[dict[int, float], dict[int, float]]:
         ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
         hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
@@ -214,9 +232,13 @@ class Fuser:
         return ouro_mapped, hrm_dict
 
     def sample_token(
-        self, ouro_logits: list[float], hrm_logits: list[float], temperature: float = 1.0,
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+        temperature: float = 1.0,
     ) -> tuple[int, str, float]:
         import random
+
         candidates = self.fuse_logits(ouro_logits, hrm_logits)
         if not candidates:
             return 0, "", 0.0

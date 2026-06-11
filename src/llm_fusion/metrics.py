@@ -7,7 +7,9 @@ from typing import Any
 
 
 def fusion_gain(
-    fused_prob: float, ouro_prob: float, hrm_prob: float,
+    fused_prob: float,
+    ouro_prob: float,
+    hrm_prob: float,
 ) -> float:
     """How much fusion boosts over the best parent (positive = better).
 
@@ -20,10 +22,13 @@ def fusion_gain(
 
 
 def parent_prob_for_token(
-    logits: list[float], tid: int, k: int = 100,
+    logits: list[float],
+    tid: int,
+    k: int = 100,
 ) -> float:
     """Get the softmax probability of a specific token ID from logits."""
     from llm_fusion.fusion import softmax_top_k
+
     ids, probs = softmax_top_k(logits, k)
     for iid, p in zip(ids, probs):
         if iid == tid:

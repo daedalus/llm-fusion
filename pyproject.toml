@@ -30,6 +30,10 @@ test = [
 ]
 lint = [
     "prospector[with_ruff,with_mypy]",
+    "opengrep",
+    "vulture",
+    "lizard",
+    "mdformat",
 ]
 all = ["llm-fusion[dev,test,lint]"]
 
@@ -53,12 +57,18 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "N", "C4", "ARG"]
+select = ["E", "F", "W", "I", "UP", "ANN", "TCH", "N", "C4", "ARG"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"tests/*" = ["ARG"]
+"tests/*" = ["ARG", "ANN"]
+"src/llm_fusion/generate.py" = ["F821", "F841"]
+"src/llm_fusion/benchmark.py" = ["ARG001", "ANN401"]
+"src/llm_fusion/metrics.py" = ["ANN401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.mypy]
 python_version = "3.11"
@@ -66,6 +76,19 @@ strict = true
 warn_return_any = true
 warn_unused_ignores = true
 ignore_missing_imports = true
+
+[tool.prospector]
+output-format = "text"
+strictness = "medium"
+test-warnings = false
+
+[tool.prospector.tools]
+ruff = true
+mypy = true
+pylint = true
+pyflakes = false
+pycodestyle = false
+mccabe = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -77,11 +100,11 @@ source = ["src"]
 branch = true
 
 [tool.coverage.report]
-exclude = ["tests/*", "*/__init__.py"]
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
     "raise AssertionError",
+    "raise NotImplementedError",
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
 ]
