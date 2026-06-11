@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
+
 from tokenizers import Tokenizer
 
-from llm_fusion.token_matcher import TokenMatcher, Match
+from llm_fusion.token_matcher import TokenMatcher
 
 
 def compute_kl(p: dict[int, float], q: dict[int, float]) -> float:

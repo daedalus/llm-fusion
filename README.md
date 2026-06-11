@@ -43,6 +43,26 @@ python -m llm_fusion --strategy cascade --cascade-threshold 0.5 --local "Explain
 python -m llm_fusion --strategy dynamic --dynamic-initial-weight 0.8 --dynamic-final-weight 0.2 --local "Once upon a time"
 ```
 
+### KL Divergence
+
+```bash
+# Show per-step KL(Ouro||HRM) and KL(HRM||Ouro) during generation
+python -m llm_fusion --kl --local "The quick brown fox jumps over the lazy dog"
+```
+
+### Fusion Gain
+```bash
+# Show per-token fusion gain (log-ratio vs best parent, positive = fusion wins)
+python -m llm_fusion --gain --local "The quick brown fox jumps over the lazy dog"
+```
+
+### Evaluation Mode
+```bash
+# Score a reference text under all 3 configurations (ouro, hrm, fused)
+python -m llm_fusion --eval "The capital of France is Paris. It is known for the Eiffel Tower." --local
+# Output: avg fusion gain, fusion win rate, oracle agreement, PPL for all 3
+```
+
 ### Perplexity Evaluation
 
 ```bash
@@ -50,6 +70,17 @@ python -m llm_fusion --strategy dynamic --dynamic-initial-weight 0.8 --dynamic-f
 python -m llm_fusion --model ouro --perplexity --local "The quick brown fox jumps over the lazy dog"
 python -m llm_fusion --model hrm --perplexity --local "The quick brown fox jumps over the lazy dog"
 python -m llm_fusion --perplexity --local "The quick brown fox jumps over the lazy dog"
+```
+
+### Benchmarks
+
+```bash
+# Run speed benchmarks for all model/strategy combinations
+python -m llm_fusion benchmark
+llm-fusion-benchmark
+
+# Custom prompt and token count
+python -m llm_fusion benchmark --prompt "Hello world" -n 100
 ```
 
 ### Parameters
@@ -69,6 +100,9 @@ python -m llm_fusion --perplexity --local "The quick brown fox jumps over the la
 | `--dynamic-initial-weight` | `0.8` | Starting Ouro weight for dynamic strategy |
 | `--dynamic-final-weight` | `0.2` | Final Ouro weight for dynamic strategy |
 | `--perplexity` | `false` | Evaluate perplexity instead of generating |
+| `--kl` | `false` | Show per-step KL divergence during generation |
+| `--gain` | `false` | Show per-step fusion gain (log-ratio vs best parent) |
+| `--eval` | `""` | Evaluate fusion vs parents on a reference text |
 | `--local` | `false` | Load models from local directories |
 
 ## Fusion Strategies
@@ -112,10 +146,11 @@ See `AGENTS.md` for details.
 │   ├── __main__.py            # python -m llm_fusion
 │   ├── cli.py                 # CLI argument parsing
 │   ├── generate.py            # Generation loop + perplexity evaluation
-│   ├── fusion.py              # Fuser class (5 strategies)
+│   ├── fusion.py              # Fuser class (5 strategies) + KL divergence
 │   ├── token_matcher.py       # Bidirectional token ID matcher
+│   ├── benchmark.py           # Speed/memory benchmark runner
 │   └── py.typed               # Type hints marker
-├── tests/                     # Pytest suite (62+ tests)
+├── tests/                     # Pytest suite (73+ tests)
 ├── Ouro-1.4B/                 # Model weights + patched modeling_ouro.py
 └── HRM-Text-1B/               # Model weights
 ```

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 
 from llm_fusion.generate import generate
 
@@ -65,6 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--kl", action="store_true", dest="show_kl",
         help="Show per-step KL divergence between model distributions",
     )
+    parser.add_argument(
+        "--gain", action="store_true", dest="show_gain",
+        help="Show per-step fusion gain (log-ratio vs best parent)",
+    )
+    parser.add_argument(
+        "--eval", type=str, default="", dest="eval_text",
+        help="Evaluate fusion against parents on a reference text",
+    )
     return parser
 
 
@@ -92,6 +99,8 @@ def main() -> int:
         dynamic_final_weight=args.dynamic_final_weight,
         perplexity=args.perplexity,
         show_kl=args.show_kl,
+        show_gain=args.show_gain,
+        eval_text=args.eval_text,
     )
     generate(**gen_kwargs)
     return 0

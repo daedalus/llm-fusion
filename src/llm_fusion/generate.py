@@ -6,10 +6,12 @@ import math
 import re
 import sys
 from pathlib import Path
+
 from tokenizers import Tokenizer
 
+from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k
+from llm_fusion.metrics import fusion_gain as _compute_gain
 from llm_fusion.token_matcher import TokenMatcher
-from llm_fusion.fusion import Fuser, softmax_top_k, compute_kl
 
 HRM_EOS_ID = 11
 OURO_EOS_ID = 0
@@ -153,6 +155,8 @@ def generate(
     dynamic_final_weight: float = 0.2,
     perplexity: bool = False,
     show_kl: bool = False,
+    show_gain: bool = False,
+    eval_text: str = "",
     ouro_path: str = "ByteDance/Ouro-1.4B",
     hrm_path: str = "sapientinc/HRM-Text-1B",
     base_dir: str | Path = "",
@@ -211,6 +215,28 @@ def generate(
             tok = ouro_tok if load_ouro else hrm_tok
             ppl = compute_perplexity(text, model_obj, tok, device)
         print(f"Perplexity: {ppl:.2f}")
+        print("-" * 60)
+        return
+
+    if eval_text:
+        print(f"Evaluating on {len(eval_text)} chars...")
+        print("-" * 60)
+        from llm_fusion.metrics import evaluate_text as _eval_fn
+        results = _eval_fn(eval_text, ouro_model, hrm_model, ouro_tok, hrm_tok,
+                            fuser if model == "fused" else None, device,
+                            max_new_tokens)
+        print(f"  Tokens evaluated:   {results['n_tokens']}")
+        print(f"  Avg fusion gain:    {results['avg_fusion_gain']:+.4f}  "
+              f"(log-ratio vs best parent)")
+        print(f"  Fusion win rate:    {results['fusion_win_rate']:.1%}  "
+              f"(fusion beats best parent)")
+        print(f"  Oracle agreement:   {results['oracle_rate']:.1%}  "
+              f"(agreement with better parent)")
+        print(f"  Ouro PPL:           {results['ouro_ppl']:.2f}")
+        print(f"  HRM PPL:            {results['hrm_ppl']:.2f}")
+        print(f"  Fused PPL:          {results['fused_ppl']:.2f}")
+        print(f"  PPL vs Ouro:        {results['ppl_improvement_vs_ouro']:+.1f}%")
+        print(f"  PPL vs HRM:         {results['ppl_improvement_vs_hrm']:+.1f}%")
         print("-" * 60)
         return
 
@@ -286,6 +312,16 @@ def generate(
                 kl_oh = compute_kl(ouro_dist, hrm_dist)
                 kl_ho = compute_kl(hrm_dist, ouro_dist)
                 print(f" [KL o→h={kl_oh:.2f} h→o={kl_ho:.2f}]", end="", flush=True)
+            if show_gain:
+                ouro_probs = dict(zip(*softmax_top_k(ouro_logits, 50)))
+                hrm_probs = dict(zip(*softmax_top_k(hrm_logits, 50)))
+                ouro_p = ouro_probs.get(tid, 0.0)
+                hrm_p = hrm_probs.get(tid, 0.0)
+                gain = _compute_gain(prob, ouro_p, hrm_p)
+                if gain > 0:
+                    print(f" [gain=+{gain:.3f}]", end="", flush=True)
+                else:
+                    print(f" [gain={gain:.3f}]", end="", flush=True)
             hrm_ids.append(tid)
             hrm_gen_ids.add(tid)
             eos_id = HRM_EOS_ID

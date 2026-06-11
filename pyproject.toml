@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Fused autoregressive text completion using Ouro-1.4B + HRM-Text-1B"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 authors = [
     {name = "Dar\u00edo Clavijo", email = "clavijodario@gmail.com"}
 ]
@@ -35,6 +35,7 @@ all = ["llm-fusion[dev,test,lint]"]
 
 [project.scripts]
 llm-fusion = "llm_fusion.cli:main"
+llm-fusion-benchmark = "llm_fusion.benchmark:main"
 
 [project.urls]
 Homepage = "https://github.com/daedalus/LLM_EXPERIMENT"
