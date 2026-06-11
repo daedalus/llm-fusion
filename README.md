@@ -194,3 +194,20 @@ vulture --min-confidence 90 src/
 # complexity analysis
 lizard src/ --CCN=15
 ```
+
+## Cite
+
+```bibtex
+@misc{clavijo2026llmfusion,
+  author       = {Dar{\'i}o Clavijo},
+  title        = {llm-fusion: Fused Autoregressive Text Completion with Ouro-1.4B and HRM-Text-1B},
+  year         = {2026},
+  howpublished = {GitHub},
+  url          = {https://github.com/daedalus/LLM_EXPERIMENT},
+  abstract     = {Weighted logit fusion over ByteDance Ouro-1.4B and Sapient HRM-Text-1B
+                  under transformers 5.11.0. Implements 5 fusion strategies (average,
+                  product, min-entropy, cascade, dynamic) via bidirectional token ID
+                  matching. Includes KL divergence, fusion gain, perplexity evaluation,
+                  and a 26-prompt robustness benchmark across 8 categories.},
+}
+```
