@@ -99,18 +99,8 @@ class Fuser:
         return candidates[-1][0], candidates[-1][2], candidates[-1][1]
 
 
-def patch_ouro_rope():
-    import torch
-    from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
-    if "default" not in ROPE_INIT_FUNCTIONS:
-        def default_rope_init(config, device=None, **kw):
-            with torch.no_grad():
-                theta = getattr(config, "rope_theta", 10000.0)
-                dim = config.hidden_size // config.num_attention_heads
-                base = theta ** (torch.arange(0, dim, 2, dtype=torch.float, device=device) / dim)
-                inv_freq = 1.0 / base
-            return inv_freq, 1.0
-        ROPE_INIT_FUNCTIONS["default"] = default_rope_init
+def patch_ouro_model(config):
+    config._attn_implementation = "eager"
 
 
 def softmax(logits: list[float], k: int) -> tuple[list[int], list[float]]:
@@ -183,8 +173,6 @@ def generate(
         print("Error: requires torch and transformers", file=sys.stderr)
         sys.exit(1)
 
-    patch_ouro_rope()
-
     matcher = TokenMatcher()
     ouro_tok = Tokenizer.from_file(str(BASE / "Ouro-1.4B/tokenizer.json"))
     hrm_tok = Tokenizer.from_file(str(BASE / "HRM-Text-1B/tokenizer.json"))
@@ -204,9 +192,18 @@ def generate(
 
     print(f"Loading models on {device}...", file=sys.stderr)
     if load_ouro:
+        from transformers import AutoConfig
+        ouro_config = AutoConfig.from_pretrained(ouro_path, trust_remote_code=True)
+        patch_ouro_model(ouro_config)
         ouro_model = AutoModelForCausalLM.from_pretrained(
-            ouro_path, torch_dtype=dtype, device_map=device, trust_remote_code=True
+            ouro_path, config=ouro_config, torch_dtype=dtype, device_map=device,
+            trust_remote_code=True,
         )
+        if device == "cpu":
+            from ouro_cache_fix import UniversalTransformerCache
+            ouro_cache = UniversalTransformerCache()
+        else:
+            ouro_cache = None
     if load_hrm:
         hrm_model = AutoModelForCausalLM.from_pretrained(
             hrm_path, torch_dtype=dtype, device_map=device,
@@ -237,7 +234,14 @@ def generate(
     for step in range(max_new_tokens):
         if load_ouro:
             with torch.no_grad():
-                ouro_out = ouro_model(input_ids=torch.tensor([ouro_ids], device=device))
+                ouro_kwargs = {}
+                if device == "cpu" and step > 0:
+                    ouro_kwargs["past_key_values"] = ouro_cache
+                    ouro_kwargs["use_cache"] = True
+                ouro_out = ouro_model(
+                    input_ids=torch.tensor([ouro_ids], device=device),
+                    **ouro_kwargs,
+                )
             ouro_logits = ouro_out.logits[0, -1, :].tolist()
             if repetition_penalty != 1.0:
                 ouro_logits = apply_repetition_penalty(ouro_logits, ouro_gen_ids, repetition_penalty)
@@ -277,7 +281,10 @@ def generate(
             print(f"\n[EOS at step {step + 1}]")
             break
 
-        print(token_str, end="", flush=True)
+        if token_str:
+            print(token_str, end="", flush=True)
+        else:
+            print(f"[tok {tid}]", end="", flush=True)
 
     print()
     print("-" * 60)

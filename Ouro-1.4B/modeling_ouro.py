@@ -461,7 +461,7 @@ class OuroRotaryEmbedding(nn.Module):
             with torch.no_grad():
                 theta = getattr(self.config, "rope_theta", 10000.0)
                 dim = self.config.hidden_size // self.config.num_attention_heads
-                _base = theta ** (torch.arange(0, dim, 2, dtype=torch.float) / dim)
+                _base = theta ** (torch.arange(0, dim, 2, dtype=torch.float, device="cpu") / dim)
                 _inv_freq = 1.0 / _base
 
             def rope_init_fn(cfg, dev=None, **kw):
@@ -469,9 +469,9 @@ class OuroRotaryEmbedding(nn.Module):
 
         self.rope_init_fn = rope_init_fn
 
-        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device="cpu")
+
         self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.original_inv_freq = self.inv_freq
 
     def compute_default_rope_parameters(self, config):
         if self.inv_freq.device.type == "meta":
@@ -481,8 +481,10 @@ class OuroRotaryEmbedding(nn.Module):
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
     def forward(self, x, position_ids):
+        inv_freq, attention_scaling = self.rope_init_fn(self.config, device=x.device)
+        self.attention_scaling = attention_scaling
         inv_freq_expanded = (
-            self.inv_freq[None, :, None]
+            inv_freq[None, :, None]
             .float()
             .expand(position_ids.shape[0], -1, 1)
             .to(x.device)
