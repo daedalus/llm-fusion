@@ -41,13 +41,21 @@ def build_parser() -> argparse.ArgumentParser:
         default="direct", help="HRM condition tag",
     )
     parser.add_argument(
-        "--strategy", choices=["average", "product", "min-entropy", "cascade"],
+        "--strategy", choices=["average", "product", "min-entropy", "cascade", "dynamic"],
         default="average",
-        help="Fusion strategy: average, product, min-entropy, or cascade",
+        help="Fusion strategy: average, product, min-entropy, cascade, or dynamic",
     )
     parser.add_argument(
         "--cascade-threshold", type=float, default=0.5,
         help="Ouro top-prob threshold for cascade strategy (default: 0.5)",
+    )
+    parser.add_argument(
+        "--dynamic-initial-weight", type=float, default=0.8,
+        help="Starting Ouro weight for dynamic strategy (default: 0.8)",
+    )
+    parser.add_argument(
+        "--dynamic-final-weight", type=float, default=0.2,
+        help="Final Ouro weight for dynamic strategy (default: 0.2)",
     )
     return parser
 
@@ -59,7 +67,7 @@ def main() -> int:
         parser.print_help()
         return 1
 
-    generate(
+    gen_kwargs = dict(
         text=args.prompt,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
@@ -72,7 +80,10 @@ def main() -> int:
         condition=args.condition,
         strategy=args.strategy,
         cascade_threshold=args.cascade_threshold,
+        dynamic_initial_weight=args.dynamic_initial_weight,
+        dynamic_final_weight=args.dynamic_final_weight,
     )
+    generate(**gen_kwargs)
     return 0
 
 

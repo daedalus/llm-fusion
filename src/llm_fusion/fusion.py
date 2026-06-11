@@ -32,6 +32,9 @@ class Fuser:
         threshold: float = 0.01,
         strategy: str = "average",
         cascade_threshold: float = 0.5,
+        dynamic_initial_weight: float = 0.8,
+        dynamic_final_weight: float = 0.2,
+        dynamic_total_steps: int = 100,
     ):
         self.matcher = matcher
         self.ouro_tok = ouro_tok
@@ -40,22 +43,30 @@ class Fuser:
         self.hrm_weight = 1.0 - ouro_weight
         self.top_k = top_k
         self.threshold = threshold
-        valid = ("average", "product", "min-entropy", "cascade")
+        valid = ("average", "product", "min-entropy", "cascade", "dynamic")
         if strategy not in valid:
             raise ValueError(f"Unknown strategy: {strategy!r}")
         self.strategy = strategy
         self.cascade_threshold = cascade_threshold
+        self.current_step = 0
+        self.dynamic_initial_weight = dynamic_initial_weight
+        self.dynamic_final_weight = dynamic_final_weight
+        self.dynamic_total_steps = dynamic_total_steps
 
     def _fuse_logits_average(
         self, ouro_logits: list[float], hrm_logits: list[float],
+        ouro_weight: float | None = None,
+        hrm_weight: float | None = None,
     ) -> list[tuple[int, float, str]]:
+        ow = self.ouro_weight if ouro_weight is None else ouro_weight
+        hw = self.hrm_weight if hrm_weight is None else hrm_weight
         ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
         hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
 
         fused: dict[int, float] = {}
 
         for tid, prob in zip(hrm_top_ids, hrm_probs):
-            fused[tid] = fused.get(tid, 0.0) + prob * self.hrm_weight
+            fused[tid] = fused.get(tid, 0.0) + prob * hw
 
         for oid, prob in zip(ouro_top_ids, ouro_probs):
             match = self.matcher.ouro_to_hrm(oid)
@@ -63,7 +74,7 @@ class Fuser:
                 continue
             share = prob / len(match.target_ids)
             for tid in match.target_ids:
-                fused[tid] = fused.get(tid, 0.0) + share * self.ouro_weight
+                fused[tid] = fused.get(tid, 0.0) + share * ow
 
         filtered = [(tid, p) for tid, p in fused.items() if p >= self.threshold]
         filtered.sort(key=lambda x: -x[1])
@@ -150,6 +161,16 @@ class Fuser:
         filtered = [(tid, p) for tid, p in zip(ids, probs) if p >= self.threshold]
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
 
+    def _fuse_logits_dynamic(
+        self, ouro_logits: list[float], hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        t = self.dynamic_total_steps
+        s = min(self.current_step, t)
+        ow = self.dynamic_initial_weight - (self.dynamic_initial_weight - self.dynamic_final_weight) * s / max(t, 1)
+        ow = max(self.dynamic_final_weight, min(self.dynamic_initial_weight, ow))
+        hw = 1.0 - ow
+        return self._fuse_logits_average(ouro_logits, hrm_logits, ow, hw)
+
     def fuse_logits(
         self, ouro_logits: list[float], hrm_logits: list[float],
     ) -> list[tuple[int, float, str]]:
@@ -159,6 +180,8 @@ class Fuser:
             return self._fuse_logits_minentropy(ouro_logits, hrm_logits)
         if self.strategy == "cascade":
             return self._fuse_logits_cascade(ouro_logits, hrm_logits)
+        if self.strategy == "dynamic":
+            return self._fuse_logits_dynamic(ouro_logits, hrm_logits)
         return self._fuse_logits_average(ouro_logits, hrm_logits)
 
     def sample_token(

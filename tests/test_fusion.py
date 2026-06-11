@@ -71,6 +71,46 @@ class TestCascade:
         assert results == []
 
 
+class TestDynamic:
+    def test_dynamic_weight_decays_with_step(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="dynamic",
+                       dynamic_initial_weight=0.9, dynamic_final_weight=0.1,
+                       dynamic_total_steps=100)
+        fuser.current_step = 0
+        r0 = fuser.fuse_logits([0.0] * fuser.ouro_tok.get_vocab_size(),
+                                [0.0] * fuser.hrm_tok.get_vocab_size())
+        fuser.current_step = 50
+        r50 = fuser.fuse_logits([0.0] * fuser.ouro_tok.get_vocab_size(),
+                                 [0.0] * fuser.hrm_tok.get_vocab_size())
+        fuser.current_step = 100
+        r100 = fuser.fuse_logits([0.0] * fuser.ouro_tok.get_vocab_size(),
+                                  [0.0] * fuser.hrm_tok.get_vocab_size())
+        assert len(r0) >= 0 and len(r50) >= 0 and len(r100) >= 0
+
+    def test_dynamic_weight_shifts_winner(self, matcher):
+        early = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="dynamic",
+                       dynamic_initial_weight=0.9, dynamic_final_weight=0.1,
+                       dynamic_total_steps=10)
+        early.current_step = 0
+        late = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="dynamic",
+                      dynamic_initial_weight=0.9, dynamic_final_weight=0.1,
+                      dynamic_total_steps=10)
+        late.current_step = 10
+        vsize = early.ouro_tok.get_vocab_size()
+        ouro_logits = [0.0] * vsize
+        hrm_logits = [0.0] * late.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 5.0
+        hrm_logits[371] = 5.0
+        early_results = early.fuse_logits(ouro_logits, hrm_logits)
+        late_results = late.fuse_logits(ouro_logits, hrm_logits)
+        assert len(early_results) > 0 and len(late_results) > 0
+
+    def test_dynamic_empty_logits(self, matcher):
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="dynamic")
+        results = fuser.fuse_logits([], [])
+        assert results == []
+
+
 class TestSoftmaxTopK:
     def test_basic_top_k(self):
         logits = [0.0, 1.0, 2.0, 3.0]

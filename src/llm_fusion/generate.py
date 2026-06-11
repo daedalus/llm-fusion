@@ -82,6 +82,8 @@ def generate(
     condition: str = "direct",
     strategy: str = "average",
     cascade_threshold: float = 0.5,
+    dynamic_initial_weight: float = 0.8,
+    dynamic_final_weight: float = 0.2,
     ouro_path: str = "ByteDance/Ouro-1.4B",
     hrm_path: str = "sapientinc/HRM-Text-1B",
     base_dir: str | Path = "",
@@ -127,7 +129,8 @@ def generate(
         )
 
     fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, strategy,
-                   cascade_threshold)
+                   cascade_threshold, dynamic_initial_weight, dynamic_final_weight,
+                   max_new_tokens)
     label = {"fused": "Fused", "ouro": "Ouro-1.4B", "hrm": "HRM-Text-1B"}[model]
     print(f"Model: {label}")
     if model == "fused":
@@ -136,6 +139,8 @@ def generate(
             print(f"Weights: Ouro={ouro_weight}  HRM={1-ouro_weight}")
         elif strategy == "cascade":
             print(f"Cascade threshold: {cascade_threshold}")
+        elif strategy == "dynamic":
+            print(f"Ouro weight: {dynamic_initial_weight} -> {dynamic_final_weight} over {max_new_tokens} steps")
     print(f"Generating up to {max_new_tokens} tokens (cond={condition})")
     print("-" * 60)
 
@@ -188,6 +193,7 @@ def generate(
                 hrm_logits = apply_repetition_penalty(hrm_logits, hrm_gen_ids, repetition_penalty)
 
         if model == "fused":
+            fuser.current_step = step
             tid, token_str, prob = fuser.sample_token(ouro_logits, hrm_logits, temperature)
             hrm_ids.append(tid)
             hrm_gen_ids.add(tid)
