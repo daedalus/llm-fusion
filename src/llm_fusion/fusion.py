@@ -59,7 +59,7 @@ class Fuser:
         self.hrm_weight = 1.0 - ouro_weight
         self.top_k = top_k
         self.threshold = threshold
-        valid = ("average", "product", "min-entropy", "cascade", "dynamic")
+        valid = ("average", "product", "min-entropy", "cascade", "dynamic", "adaptive", "confidence", "hybrid")
         if strategy not in valid:
             raise ValueError(f"Unknown strategy: {strategy!r}")
         self.strategy = strategy
@@ -199,6 +199,62 @@ class Fuser:
         hw = 1.0 - ow
         return self._fuse_logits_average(ouro_logits, hrm_logits, ow, hw)
 
+    def _fuse_logits_adaptive(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        ouro_entropy = self._distribution_entropy(ouro_logits, self.top_k)
+        hrm_entropy = self._distribution_entropy(hrm_logits, self.top_k)
+        total = ouro_entropy + hrm_entropy
+        if total < 1e-10:
+            ow, hw = 0.5, 0.5
+        else:
+            ow = hrm_entropy / total
+            hw = ouro_entropy / total
+        return self._fuse_logits_average(ouro_logits, hrm_logits, ow, hw)
+
+    def _fuse_logits_confidence(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, 1)
+        hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, 1)
+        ouro_conf = ouro_probs[0] if ouro_probs else 0.0
+        hrm_conf = hrm_probs[0] if hrm_probs else 0.0
+        total = ouro_conf + hrm_conf
+        if total < 1e-10:
+            ow, hw = 0.5, 0.5
+        else:
+            ow = ouro_conf / total
+            hw = hrm_conf / total
+        return self._fuse_logits_average(ouro_logits, hrm_logits, ow, hw)
+
+    def _fuse_logits_hybrid(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        t = self.dynamic_total_steps
+        s = min(self.current_step, t)
+        base_ow = self.dynamic_initial_weight - (
+            self.dynamic_initial_weight - self.dynamic_final_weight
+        ) * s / max(t, 1)
+        base_ow = max(self.dynamic_final_weight, min(self.dynamic_initial_weight, base_ow))
+        ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, 1)
+        hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, 1)
+        ouro_conf = ouro_probs[0] if ouro_probs else 0.0
+        hrm_conf = hrm_probs[0] if hrm_probs else 0.0
+        conf_total = ouro_conf + hrm_conf
+        if conf_total < 1e-10:
+            conf_ow = 0.5
+        else:
+            conf_ow = ouro_conf / conf_total
+        ow = 0.7 * base_ow + 0.3 * conf_ow
+        hw = 1.0 - ow
+        return self._fuse_logits_average(ouro_logits, hrm_logits, ow, hw)
+
     def fuse_logits(
         self,
         ouro_logits: list[float],
@@ -212,6 +268,12 @@ class Fuser:
             return self._fuse_logits_cascade(ouro_logits, hrm_logits)
         if self.strategy == "dynamic":
             return self._fuse_logits_dynamic(ouro_logits, hrm_logits)
+        if self.strategy == "adaptive":
+            return self._fuse_logits_adaptive(ouro_logits, hrm_logits)
+        if self.strategy == "confidence":
+            return self._fuse_logits_confidence(ouro_logits, hrm_logits)
+        if self.strategy == "hybrid":
+            return self._fuse_logits_hybrid(ouro_logits, hrm_logits)
         return self._fuse_logits_average(ouro_logits, hrm_logits)
 
     def model_distributions(
@@ -259,3 +321,15 @@ class Fuser:
             if r <= cumulative:
                 return candidates[i][0], candidates[i][2], candidates[i][1]
         return candidates[-1][0], candidates[-1][2], candidates[-1][1]
+
+    def sample_token_pair(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+        temperature: float = 1.0,
+        rng: random.Random | None = None,
+    ) -> tuple[int, int, str, float]:
+        hrm_id, token_str, prob = self.sample_token(ouro_logits, hrm_logits, temperature, rng)
+        match = self.matcher.hrm_to_ouro(hrm_id)
+        ouro_id = match.target_ids[0] if match.target_ids else 0
+        return hrm_id, ouro_id, token_str, prob

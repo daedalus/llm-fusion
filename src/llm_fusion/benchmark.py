@@ -193,6 +193,9 @@ def run_benchmark(
             {"model": "fused", "strategy": "min-entropy"},
             {"model": "fused", "strategy": "cascade"},
             {"model": "fused", "strategy": "dynamic"},
+            {"model": "fused", "strategy": "adaptive"},
+            {"model": "fused", "strategy": "confidence"},
+            {"model": "fused", "strategy": "hybrid"},
         ]
 
     if cache:
@@ -337,18 +340,18 @@ def run_benchmark(
                 total_entropy += -sum(p * math.log(max(p, 1e-10)) for p in m_dist.values())
                 n_kl_steps += 1
                 fuser.current_step = step
-                tid, token_str, prob = fuser.sample_token(ouro_logits, hrm_logits, temperature)
-                ouro_p = parent_prob_for_token(ouro_logits, tid, top_k)
-                hrm_p = parent_prob_for_token(hrm_logits, tid, top_k)
+                hrm_tid, ouro_tid, token_str, prob = fuser.sample_token_pair(ouro_logits, hrm_logits, temperature)
+                ouro_p = parent_prob_for_token(ouro_logits, hrm_tid, top_k)
+                hrm_p = parent_prob_for_token(hrm_logits, hrm_tid, top_k)
                 gain = _calc_gain(prob, ouro_p, hrm_p)
                 total_gain += gain
                 if prob > max(ouro_p, hrm_p):
                     fusion_wins += 1
                 if ouro_p >= hrm_p:
                     oracle_matches += 1
-                ouro_ids = [tid]
-                hrm_ids_list = [tid]
-                hrm_gen_ids.add(tid)
+                hrm_ids_list = [hrm_tid]
+                ouro_ids = [ouro_tid]
+                hrm_gen_ids.add(hrm_tid)
             elif model == "ouro":
                 from llm_fusion.generate import sample_from_logits
 

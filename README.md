@@ -160,27 +160,33 @@ Benchmark output includes speed + quality metrics per config:
 
 ### Benchmark Results
 
-Benchmark on the default prompt ("The quick brown fox jumps over the lazy dog"), 20 tokens, CPU:
+Benchmark on the default prompt ("The quick brown fox jumps over the lazy dog"), 25 tokens, CPU:
 
 | Config | Decode | Gen | FusedPPL | KL(o>h) | JSD | WinRate | Gain | Oracle | Entropy |
 |--------|--------|-----|----------|---------|-----|---------|------|--------|---------|
-| ouro/average | 1.1 | 1.5 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
-| hrm/average | 1.5 | 2.2 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
-| fused/average | 0.5 | 0.7 | 85.8 | 17.637 | 0.612 | 15.0% | -0.579 | 15.0% | 2.8 |
-| fused/product | 0.6 | 0.8 | 85.8 | 20.816 | 0.693 | 0.0% | -1.552 | 50.0% | 2.6 |
-| fused/min-entropy | 0.5 | 0.7 | 85.8 | 17.750 | 0.623 | 5.0% | +0.000 | 5.0% | 2.6 |
-| fused/cascade | 0.6 | 0.8 | 85.8 | 17.699 | 0.622 | 15.0% | +0.000 | 15.0% | 2.8 |
-| **fused/dynamic** | **0.6** | **0.8** | **85.8** | **15.580** | **0.578** | **65.0%** | **+0.141** | **50.0%** | **2.8** |
+| ouro/average | 1.3 | 1.6 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
+| hrm/average | 1.5 | 2.1 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
+| fused/average | 0.5 | 0.7 | 85.8 | 21.981 | 0.693 | 36.0% | +0.035 | 4.0% | 1.6 |
+| fused/product | 0.6 | 0.8 | 85.8 | 21.388 | 0.693 | 0.0% | +0.000 | 100.0% | 3.1 |
+| fused/min-entropy | 0.6 | 0.7 | 85.8 | 21.981 | 0.693 | 36.0% | +0.380 | 4.0% | 1.6 |
+| fused/cascade | 0.6 | 0.8 | 85.8 | 21.877 | 0.692 | 28.0% | +0.967 | 0.0% | 1.6 |
+| **fused/dynamic** | **0.6** | **0.8** | **85.8** | **22.274** | **0.693** | **76.0%** | **+1.624** | **12.0%** | **1.7** |
+| fused/adaptive | 0.6 | 0.7 | 85.8 | 21.981 | 0.693 | 36.0% | +0.296 | 4.0% | 1.6 |
+| fused/confidence | 0.6 | 0.7 | 85.8 | 21.981 | 0.693 | 36.0% | +0.035 | 4.0% | 1.6 |
+| fused/hybrid | 0.6 | 0.7 | 85.8 | 22.274 | 0.693 | 76.0% | +1.588 | 12.0% | 1.7 |
 
-**Dynamic is the best strategy** — 65% win rate, positive fusion gain (+0.141), lowest JSD (0.578).
+**Dynamic is the best strategy** — 76% win rate, +1.624 fusion gain.
 
 | Strategy | WinRate | Gain | Oracle | Interpretation |
 |----------|---------|------|--------|----------------|
-| **dynamic** | **65.0%** | **+0.141** | **50.0%** | **Best** — fusion helps more often than not |
-| average | 15.0% | -0.579 | 15.0% | Fusion mostly hurts |
-| cascade | 15.0% | +0.000 | 15.0% | Neutral — defers when Ouro is unsure |
-| min-entropy | 5.0% | +0.000 | 5.0% | Almost never picks fusion |
-| product | 0.0% | -1.552 | 50.0% | **Worst** — strongly penalizes both models |
+| **dynamic** | **76.0%** | **+1.624** | **12.0%** | **Best** — fusion helps 3/4 of the time |
+| hybrid | 76.0% | +1.588 | 12.0% | Tied with dynamic, slightly lower gain |
+| cascade | 28.0% | +0.967 | 0.0% | High gain when it fuses, but rarely does |
+| min-entropy | 36.0% | +0.380 | 4.0% | Moderate — routes to confident model |
+| adaptive | 36.0% | +0.296 | 4.0% | Entropy-weighted, noisier than dynamic |
+| average | 36.0% | +0.035 | 4.0% | Baseline — fusion barely helps |
+| confidence | 36.0% | +0.035 | 4.0% | Same as average — top-1 prob is weak signal |
+| product | 0.0% | +0.000 | 100.0% | **Worst** — kills all tokens, 0% win rate |
 
 ### Parameters
 

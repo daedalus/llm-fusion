@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--strategy",
-        choices=["average", "product", "min-entropy", "cascade", "dynamic"],
+        choices=["average", "product", "min-entropy", "cascade", "dynamic", "adaptive", "confidence", "hybrid"],
         default="dynamic",
         help="Fusion strategy: average, product, min-entropy, cascade, or dynamic",
     )
