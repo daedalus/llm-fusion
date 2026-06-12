@@ -45,26 +45,27 @@ class TestFormatTable:
             model="ouro",
             tokens_generated=42,
             total_time_s=2.0,
-            tokens_per_sec=21.0,
+            decoding_tps=21.0,
+            generation_tps=18.0,
             ttft_s=0.5,
             memory_mb=1024.0,
         )
         table = format_table([r])
-        assert "ouro/average" in table
+        assert "ouro/dynamic" in table
         assert "21.0" in table
 
     def test_multiple_rows(self) -> None:
         results = [
             BenchmarkResult(
-                model="ouro", tokens_generated=50, total_time_s=2.0, tokens_per_sec=25.0
+                model="ouro", tokens_generated=50, total_time_s=2.0, decoding_tps=25.0, generation_tps=20.0
             ),
             BenchmarkResult(
-                model="hrm", tokens_generated=40, total_time_s=2.0, tokens_per_sec=20.0
+                model="hrm", tokens_generated=40, total_time_s=2.0, decoding_tps=20.0, generation_tps=16.0
             ),
         ]
         table = format_table(results)
-        assert "ouro/average" in table
-        assert "hrm/average" in table
+        assert "ouro/dynamic" in table
+        assert "hrm/dynamic" in table
         assert "25.0" in table
         assert "20.0" in table
 

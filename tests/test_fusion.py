@@ -217,7 +217,7 @@ class TestFuser:
         assert tid == 371
 
     def test_sample_token_temperature(self, matcher) -> None:
-        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, ouro_weight=0.0)
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, ouro_weight=0.0, strategy="average")
         ouro_logits = [0.0] * matcher.ouro_tok.get_vocab_size()
         hrm_logits = [0.0] * matcher.hrm_tok.get_vocab_size()
         hrm_logits[371] = 10.0

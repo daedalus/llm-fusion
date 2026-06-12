@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from tokenizers import Tokenizer
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -66,6 +69,10 @@ class TokenMatcher:
             return dst_by_str.get(token_str)
         return None
 
+    @staticmethod
+    def _normalize_bpe(s: str) -> str:
+        return s.replace("\u0120", " ")
+
     def _round_trip_check(self, src: str, src_id: int, target_ids: list[int]) -> tuple[bool, str]:
         source_tok = self.ouro_tok if src == "ouro" else self.hrm_tok
         target_tok = self.hrm_tok if src == "ouro" else self.ouro_tok
@@ -74,7 +81,7 @@ class TokenMatcher:
         original_str = source_tok.decode([src_id], skip_special_tokens=False)
         target_str = target_tok.decode(target_ids, skip_special_tokens=False)
 
-        if original_str == target_str:
+        if self._normalize_bpe(original_str) == self._normalize_bpe(target_str):
             return True, ""
 
         re_encoded = source_tok.encode(target_str).ids
@@ -92,7 +99,7 @@ class TokenMatcher:
 
     def _normalize_candidates(self, s: str, src: str) -> list[str]:
         candidates = [s]
-        if src == "ouro" and s.startswith("\u0120"):
+        if s.startswith("\u0120"):
             candidates.append(s[1:])
             candidates.append(" " + s[1:])
         return candidates
@@ -117,6 +124,12 @@ class TokenMatcher:
                     target_str=dst_tok.decode([target_id], skip_special_tokens=False),
                     note="special token",
                 )
+            return Match(
+                "mismatch",
+                [],
+                source_str=token_str,
+                note=f"special token {token_str!r} has no {dst} equivalent",
+            )
 
         for candidate in self._normalize_candidates(token_str, src):
             if candidate in dst_vocab:
@@ -127,6 +140,10 @@ class TokenMatcher:
         target_ids = dst_tok.encode(decoded).ids
 
         if not target_ids:
+            log.warning(
+                "_map_single %s->%s: encode(%r) returned empty for token %d",
+                src, dst, decoded, token_id,
+            )
             return Match(
                 "approx",
                 [],
@@ -165,12 +182,18 @@ class TokenMatcher:
         target_str = dst_tok.decode(target_ids, skip_special_tokens=False)
         re_encoded = src_tok.encode(target_str).ids
 
-        if decoded == target_str:
+        if self._normalize_bpe(decoded) == self._normalize_bpe(target_str):
             confidence = "exact"
         elif any(tid in re_encoded for tid in token_ids):
             confidence = "approx"
         else:
             confidence = "mismatch"
+
+        if len(target_ids) != len(token_ids):
+            log.debug(
+                "map_sequence %s: token count changed %d -> %d for %r",
+                src, len(token_ids), len(target_ids), decoded,
+            )
 
         return Match(confidence, target_ids, source_str=decoded, target_str=target_str)
 
