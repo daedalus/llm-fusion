@@ -271,10 +271,11 @@ def run_benchmark(
         if model in ("ouro", "fused"):
             ouro_prompt_ids = ouro_tok.encode(text).ids
             r.prompt_tokens = len(ouro_prompt_ids)
-        else:
+        if model in ("hrm", "fused"):
             prompt = format_hrm_prompt(text, condition)
             hrm_ids = hrm_tok.encode(prompt).ids
-            r.prompt_tokens = len(hrm_ids)
+            if model == "hrm":
+                r.prompt_tokens = len(hrm_ids)
 
         generated_text = ""
         ouro_gen_ids: set[int] = set()
@@ -672,6 +673,69 @@ def format_robustness_table(
     return "\n".join(lines)
 
 
+def run_graph_benchmark(
+    text: str = "The quick brown fox jumps over the lazy dog.",
+    temperature: float = 0.0,
+    cache: bool = False,
+    device: str = "auto",
+) -> None:
+    import matplotlib.pyplot as plt
+
+    token_counts = [10, 30, 50]
+    strategies = ["average", "product", "min-entropy", "cascade", "dynamic"]
+    metrics = ["fusion_win_rate", "avg_fusion_gain", "avg_kl_oh", "avg_jsd", "fused_entropy"]
+    metric_labels = {
+        "fusion_win_rate": "Win Rate",
+        "avg_fusion_gain": "Fusion Gain",
+        "avg_kl_oh": "KL(O||H)",
+        "avg_jsd": "JSD",
+        "fused_entropy": "Entropy",
+    }
+
+    all_results: dict[int, list[BenchmarkResult]] = {}
+    for n in token_counts:
+        print(f"\nRunning benchmark for n={n}...", file=sys.stderr)
+        configs = [{"model": "fused", "strategy": s} for s in strategies]
+        results = run_benchmark(
+            text=text,
+            max_new_tokens=n,
+            temperature=temperature,
+            cache=cache,
+            device=device,
+            configs=configs,
+        )
+        all_results[n] = results
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle("Fusion Metrics vs Completion Tokens", fontsize=14)
+
+    for ax, metric in zip(axes.flat, metrics):
+        for strategy in strategies:
+            xs = []
+            ys = []
+            for n in token_counts:
+                for r in all_results[n]:
+                    if r.strategy == strategy:
+                        xs.append(n)
+                        ys.append(getattr(r, metric, 0.0))
+            ax.plot(xs, ys, marker="o", label=strategy, linewidth=2)
+        ax.set_xlabel("Completion Tokens (n)")
+        ax.set_ylabel(metric_labels.get(metric, metric))
+        ax.set_title(metric_labels.get(metric, metric))
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    if len(metrics) < len(axes.flat):
+        for ax in axes.flat[len(metrics):]:
+            ax.set_visible(False)
+
+    plt.tight_layout()
+    out_path = "benchmark_metrics_vs_n.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    print(f"\nGraph saved to {out_path}", file=sys.stderr)
+    plt.close()
+
+
 def main() -> None:
     import argparse
 
@@ -696,6 +760,11 @@ def main() -> None:
         default="auto",
         choices=["cpu", "cuda", "auto"],
         help="Device to run on (default: auto)",
+    )
+    parser.add_argument(
+        "--graph",
+        action="store_true",
+        help="Run benchmarks at multiple token counts and plot metrics vs n",
     )
     args = parser.parse_args()
 
@@ -727,6 +796,14 @@ def main() -> None:
             device=args.device,
         )
         print("\n" + format_table(results))
+
+    if args.graph:
+        run_graph_benchmark(
+            text=args.prompt,
+            temperature=args.temp,
+            cache=args.benchmark_cache,
+            device=args.device,
+        )
 
 
 if __name__ == "__main__":
