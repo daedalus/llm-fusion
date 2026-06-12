@@ -6,6 +6,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from tokenizers import Tokenizer
 
@@ -14,7 +15,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class Match:
-    confidence: str  # "exact" | "approx" | "mismatch" | "invalid"
+    confidence: Literal["exact", "approx", "mismatch", "invalid"]
     target_ids: list[int]
     source_str: str | None = None
     target_str: str | None = None
@@ -22,9 +23,17 @@ class Match:
 
 
 def _load_added_tokens(path: Path) -> dict[int, str]:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    return {t["id"]: t["content"] for t in data.get("added_tokens", [])}
+    result: dict[int, str] = {}
+    for t in data.get("added_tokens", []):
+        try:
+            result[t["id"]] = t["content"]
+        except KeyError as e:
+            raise ValueError(
+                f"Missing key {e} in added token entry {t} from {path}"
+            ) from e
+    return result
 
 
 class TokenMatcher:
@@ -84,20 +93,12 @@ class TokenMatcher:
         if self._normalize_bpe(original_str) == self._normalize_bpe(target_str):
             return True, ""
 
-        re_encoded = source_tok.encode(target_str).ids
-        if src_id in re_encoded:
-            return True, (
-                f"string mismatch ({original_str!r} vs {target_str!r}) "
-                f"but src_id recovered in re-encode"
-            )
-
         return False, (
-            f"decode({original_str!r}) -> {dst_name}{target_ids} "
-            f"-> decode({target_str!r}) -> re-encode -> {re_encoded} "
-            f"(expected to contain {src_id})"
+            f"decode({original_str!r}) -> {dst_name} {target_ids} "
+            f"-> decode({target_str!r})"
         )
 
-    def _normalize_candidates(self, s: str, src: str) -> list[str]:
+    def _normalize_candidates(self, s: str) -> list[str]:
         candidates = [s]
         if s.startswith("\u0120"):
             candidates.append(s[1:])
@@ -131,7 +132,7 @@ class TokenMatcher:
                 note=f"special token {token_str!r} has no {dst} equivalent",
             )
 
-        for candidate in self._normalize_candidates(token_str, src):
+        for candidate in self._normalize_candidates(token_str):
             if candidate in dst_vocab:
                 tid = dst_vocab[candidate]
                 return Match("exact", [tid], source_str=token_str, target_str=candidate)
@@ -153,9 +154,10 @@ class TokenMatcher:
             )
 
         ok, msg = self._round_trip_check(src, token_id, target_ids)
-        confidence = "approx" if ok else "mismatch"
         target_str = dst_tok.decode(target_ids, skip_special_tokens=False)
-        return Match(confidence, target_ids, source_str=token_str, target_str=target_str, note=msg)
+        if ok:
+            return Match("approx", target_ids, source_str=token_str, target_str=target_str, note=msg)
+        return Match("mismatch", target_ids, source_str=token_str, target_str=target_str, note=msg)
 
     def ouro_to_hrm(self, token_id: int) -> Match:
         return self._map_single(token_id, "ouro", "hrm")
@@ -163,39 +165,92 @@ class TokenMatcher:
     def hrm_to_ouro(self, token_id: int) -> Match:
         return self._map_single(token_id, "hrm", "ouro")
 
+    def _decode_encode_segment(
+        self, token_ids: list[int], src_tok: Tokenizer, dst_tok: Tokenizer,
+    ) -> tuple[list[int], str, str]:
+        decoded = src_tok.decode(token_ids, skip_special_tokens=False)
+        target_ids = dst_tok.encode(decoded).ids
+        if not target_ids:
+            return [], decoded, ""
+        target_str = dst_tok.decode(target_ids, skip_special_tokens=False)
+        return target_ids, decoded, target_str
+
     def map_sequence(self, token_ids: list[int], src: str) -> Match:
         src_tok = self.ouro_tok if src == "ouro" else self.hrm_tok
         dst_tok = self.hrm_tok if src == "ouro" else self.ouro_tok
+        dst = "hrm" if src == "ouro" else "ouro"
 
-        decoded = src_tok.decode(token_ids, skip_special_tokens=False)
-        target_ids = dst_tok.encode(decoded).ids
-
-        if not target_ids:
-            return Match(
-                "approx",
-                [],
-                source_str=decoded,
-                target_str="",
-                note=f"encode({decoded!r}) -> empty",
+        has_special = any(self._is_special(tid, src) for tid in token_ids)
+        if not has_special:
+            target_ids, decoded, target_str = self._decode_encode_segment(
+                token_ids, src_tok, dst_tok,
             )
+            if not target_ids:
+                return Match(
+                    "approx", [],
+                    source_str=decoded, target_str="",
+                    note=f"encode({decoded!r}) -> empty",
+                )
+            if len(target_ids) != len(token_ids):
+                log.debug(
+                    "map_sequence %s: token count changed %d -> %d for %r",
+                    src, len(token_ids), len(target_ids), decoded,
+                )
+            if self._normalize_bpe(decoded) == self._normalize_bpe(target_str):
+                return Match("exact", target_ids, source_str=decoded, target_str=target_str)
+            return Match("mismatch", target_ids, source_str=decoded, target_str=target_str)
 
-        target_str = dst_tok.decode(target_ids, skip_special_tokens=False)
-        re_encoded = src_tok.encode(target_str).ids
+        rank = {"exact": 0, "approx": 1, "mismatch": 2, "invalid": 3}
+        all_target_ids: list[int] = []
+        run: list[int] = []
+        overall: Literal["exact", "approx", "mismatch", "invalid"] = "exact"
+        source_parts: list[str] = []
+        target_parts: list[str] = []
 
-        if self._normalize_bpe(decoded) == self._normalize_bpe(target_str):
-            confidence = "exact"
-        elif any(tid in re_encoded for tid in token_ids):
-            confidence = "approx"
-        else:
-            confidence = "mismatch"
+        def _worse(
+            a: Literal["exact", "approx", "mismatch", "invalid"],
+            b: Literal["exact", "approx", "mismatch", "invalid"],
+        ) -> Literal["exact", "approx", "mismatch", "invalid"]:
+            return a if rank.get(a, 3) >= rank.get(b, 3) else b
 
-        if len(target_ids) != len(token_ids):
+        for tid in token_ids:
+            if self._is_special(tid, src):
+                if run:
+                    seg_ids, s_dec, s_tgt = self._decode_encode_segment(
+                        run, src_tok, dst_tok,
+                    )
+                    all_target_ids.extend(seg_ids)
+                    source_parts.append(s_dec)
+                    target_parts.append(s_tgt)
+                    run = []
+                match = self._map_single(tid, src, dst)
+                if match.target_ids:
+                    all_target_ids.extend(match.target_ids)
+                if match.source_str:
+                    source_parts.append(match.source_str)
+                if match.target_str:
+                    target_parts.append(match.target_str)
+                overall = _worse(overall, match.confidence)
+            else:
+                run.append(tid)
+        if run:
+            seg_ids, s_dec, s_tgt = self._decode_encode_segment(
+                run, src_tok, dst_tok,
+            )
+            all_target_ids.extend(seg_ids)
+            source_parts.append(s_dec)
+            target_parts.append(s_tgt)
+
+        if len(all_target_ids) != len(token_ids):
             log.debug(
                 "map_sequence %s: token count changed %d -> %d for %r",
-                src, len(token_ids), len(target_ids), decoded,
+                src, len(token_ids), len(all_target_ids), "".join(source_parts),
             )
 
-        return Match(confidence, target_ids, source_str=decoded, target_str=target_str)
+        return Match(
+            overall, all_target_ids,
+            source_str="".join(source_parts), target_str="".join(target_parts),
+        )
 
     def format_match(self, m: Match, src_name: str, src_id: int | None = None) -> str:
         label = src_name.upper()
@@ -220,8 +275,13 @@ class TokenMatcher:
         print("Token Matcher: Ouro-1.4B <-> HRM-Text-1B")
         print(f"  Ouro vocab: {len(self.ouro_vocab):>5}  ({len(self.ouro_special):>2} special)")
         print(f"  HRM  vocab: {len(self.hrm_vocab):>5}  ({len(self.hrm_special):>2} special)")
+        shared_by_value = set(self.ouro_special.values()) & set(self.hrm_special.values())
+        shared_by_id = len(
+            set(self.ouro_special.keys()) & set(self.hrm_special.keys())
+        )
         print(
             f"  Shared special tokens: "
-            f"{len(set(self.ouro_special.values()) & set(self.hrm_special.values()))}"
+            f"{len(shared_by_value)} by string value, "
+            f"{shared_by_id} by ID"
         )
         print()
