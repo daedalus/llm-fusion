@@ -163,7 +163,7 @@ def generate(
     model: str = "fused",
     repetition_penalty: float = 1.0,
     condition: str = "direct",
-    strategy: str = "average",
+    strategy: str = "dynamic",
     cascade_threshold: float = 0.5,
     dynamic_initial_weight: float = 0.8,
     dynamic_final_weight: float = 0.2,
@@ -203,7 +203,7 @@ def generate(
     hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16
+    dtype = torch.bfloat16 if device == "cpu" else torch.float16
     load_ouro = model in ("fused", "ouro")
     load_hrm = model in ("fused", "hrm")
 

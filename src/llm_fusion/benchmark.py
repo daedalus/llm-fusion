@@ -2,13 +2,49 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import torch
+
+BENCHMARK_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / ".benchmark_cache"
+
+try:
+    from ouro_cache_fix import UniversalTransformerCache  # noqa: F401
+
+    HAS_OURO_CACHE = True
+except ImportError:
+    HAS_OURO_CACHE = False
+
+
+def _cache_key(params: dict[str, Any]) -> str:
+    raw = json.dumps(params, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _load_cache(key: str, bench_type: str) -> list[dict] | None:
+    path = BENCHMARK_CACHE_DIR / f"{bench_type}_{key}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _save_cache(key: str, bench_type: str, results: list[Any]) -> None:
+    BENCHMARK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = BENCHMARK_CACHE_DIR / f"{bench_type}_{key}.json"
+    data = [asdict(r) if hasattr(r, "__dataclass_fields__") else r for r in results]
+    path.write_text(json.dumps(data, indent=2, default=str))
 
 ROBUSTNESS_BATTERY: list[dict[str, str]] = [
     # Factual / knowledge
@@ -95,13 +131,25 @@ ROBUSTNESS_BATTERY: list[dict[str, str]] = [
 @dataclass
 class BenchmarkResult:
     model: str
-    strategy: str = "average"
+    strategy: str = "dynamic"
     tokens_generated: int = 0
     total_time_s: float = 0.0
     ttft_s: float = 0.0
     tokens_per_sec: float = 0.0
+    decoding_tps: float = 0.0
+    generation_tps: float = 0.0
     memory_mb: float = 0.0
     prompt_tokens: int = 0
+    ouro_ppl: float = 0.0
+    hrm_ppl: float = 0.0
+    fused_ppl: float = 0.0
+    avg_kl_oh: float = 0.0
+    avg_kl_ho: float = 0.0
+    avg_jsd: float = 0.0
+    fusion_win_rate: float = 0.0
+    avg_fusion_gain: float = 0.0
+    oracle_rate: float = 0.0
+    fused_entropy: float = 0.0
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -133,6 +181,8 @@ def run_benchmark(
     condition: str = "direct",
     base_dir: str = "",
     configs: list[dict[str, Any]] | None = None,
+    cache: bool = False,
+    device: str = "auto",
 ) -> list[BenchmarkResult]:
     if configs is None:
         configs = [
@@ -145,12 +195,26 @@ def run_benchmark(
             {"model": "fused", "strategy": "dynamic"},
         ]
 
+    if cache:
+        ck = _cache_key({
+            "text": text, "max_new_tokens": max_new_tokens,
+            "temperature": temperature, "top_k": top_k, "threshold": threshold,
+            "ouro_weight": ouro_weight, "configs": configs,
+        })
+        cached = _load_cache(ck, "speed")
+        if cached is not None:
+            print(f"  (loaded speed cache {ck})", file=sys.stderr)
+            return [BenchmarkResult(**d) for d in cached]
+
     import torch
     from tokenizers import Tokenizer
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    from llm_fusion.fusion import Fuser
-    from llm_fusion.generate import format_hrm_prompt, patch_ouro_model
+    from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k
+    from llm_fusion.generate import format_hrm_prompt
+    from llm_fusion.loader import patch_ouro_model
+    from llm_fusion.metrics import fusion_gain as _calc_gain
+    from llm_fusion.metrics import parent_prob_for_token
     from llm_fusion.token_matcher import TokenMatcher
 
     bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
@@ -160,8 +224,9 @@ def run_benchmark(
     ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
     hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.bfloat16 if device == "cpu" else torch.float16
 
     needs_ouro = any(c["model"] in ("fused", "ouro") for c in configs)
     needs_hrm = any(c["model"] in ("fused", "hrm") for c in configs)
@@ -193,7 +258,7 @@ def run_benchmark(
 
     for cfg in configs:
         model = cfg["model"]
-        strategy = cfg.get("strategy", "average")
+        strategy = cfg.get("strategy", "dynamic")
         ouro_weight = cfg.get("ouro_weight", ouro_weight)
 
         r = BenchmarkResult(model=model, strategy=strategy)
@@ -213,47 +278,88 @@ def run_benchmark(
         hrm_gen_ids: set[int] = set()
         ouro_ids = list(ouro_prompt_ids) if model in ("fused", "ouro") else []
         hrm_ids_list = list(hrm_ids) if model in ("fused", "hrm") else []
+        ouro_cache = None
+        hrm_cache = None
+        total_kl_oh = 0.0
+        total_kl_ho = 0.0
+        total_jsd = 0.0
+        total_gain = 0.0
+        fusion_wins = 0
+        oracle_matches = 0
+        total_entropy = 0.0
+        n_kl_steps = 0
         ttft = 0.0
         t0 = time.time()
 
         for step in range(max_new_tokens):
             if model in ("fused", "ouro"):
-                if model == "fused":
-                    ouro_ids = ouro_prompt_ids + ouro_tok.encode(generated_text).ids
                 with torch.no_grad():
+                    ouro_kwargs: dict[str, Any] = {}
+                    if step > 0 and ouro_cache is not None:
+                        ouro_kwargs["past_key_values"] = ouro_cache
+                        ouro_kwargs["use_cache"] = True
                     ouro_out = ouro_model(
                         input_ids=torch.tensor([ouro_ids], device=device),
+                        **ouro_kwargs,
                     )
                 ouro_logits = ouro_out.logits[0, -1, :].tolist()
+                if step == 0:
+                    ouro_cache = ouro_out.past_key_values
 
             if model in ("fused", "hrm"):
-                if model == "fused":
-                    hrm_tti = torch.ones(
-                        len(hrm_ids_list), dtype=torch.long, device=device
-                    ).unsqueeze(0)
-                    with torch.no_grad():
-                        hrm_out = hrm_model(
-                            input_ids=torch.tensor([hrm_ids_list], device=device),
-                            token_type_ids=hrm_tti,
-                        )
-                    hrm_logits = hrm_out.logits[0, -1, :].tolist()
+                hrm_tti = torch.ones(
+                    len(hrm_ids_list), dtype=torch.long, device=device
+                ).unsqueeze(0)
+                with torch.no_grad():
+                    hrm_kwargs: dict[str, Any] = {}
+                    if step > 0 and hrm_cache is not None:
+                        hrm_kwargs["past_key_values"] = hrm_cache
+                        hrm_kwargs["use_cache"] = True
+                    hrm_out = hrm_model(
+                        input_ids=torch.tensor([hrm_ids_list], device=device),
+                        token_type_ids=hrm_tti,
+                        **hrm_kwargs,
+                    )
+                hrm_logits = hrm_out.logits[0, -1, :].tolist()
+                if step == 0:
+                    hrm_cache = hrm_out.past_key_values
 
             if model == "fused":
+                ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, top_k)
+                hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, top_k)
+                ouro_dist = dict(zip(ouro_top_ids, ouro_probs))
+                hrm_dist = dict(zip(hrm_top_ids, hrm_probs))
+                total_kl_oh += compute_kl(ouro_dist, hrm_dist)
+                total_kl_ho += compute_kl(hrm_dist, ouro_dist)
+                all_ids = set(ouro_dist) | set(hrm_dist)
+                m_dist = {tid: 0.5 * (ouro_dist.get(tid, 0.0) + hrm_dist.get(tid, 0.0)) for tid in all_ids}
+                total_jsd += 0.5 * compute_kl(ouro_dist, m_dist) + 0.5 * compute_kl(hrm_dist, m_dist)
+                total_entropy += -sum(p * math.log(max(p, 1e-10)) for p in m_dist.values())
+                n_kl_steps += 1
                 fuser.current_step = step
                 tid, token_str, prob = fuser.sample_token(ouro_logits, hrm_logits, temperature)
-                hrm_ids_list.append(tid)
+                ouro_p = parent_prob_for_token(ouro_logits, tid, top_k)
+                hrm_p = parent_prob_for_token(hrm_logits, tid, top_k)
+                gain = _calc_gain(prob, ouro_p, hrm_p)
+                total_gain += gain
+                if prob > max(ouro_p, hrm_p):
+                    fusion_wins += 1
+                if ouro_p >= hrm_p:
+                    oracle_matches += 1
+                ouro_ids = [tid]
+                hrm_ids_list = [tid]
                 hrm_gen_ids.add(tid)
             elif model == "ouro":
                 from llm_fusion.generate import sample_from_logits
 
                 tid, token_str, prob = sample_from_logits(ouro_logits, ouro_tok, top_k, temperature)
-                ouro_ids.append(tid)
+                ouro_ids = [tid]
                 ouro_gen_ids.add(tid)
             elif model == "hrm":
                 from llm_fusion.generate import sample_from_logits
 
                 tid, token_str, prob = sample_from_logits(hrm_logits, hrm_tok, top_k, temperature)
-                hrm_ids_list.append(tid)
+                hrm_ids_list = [tid]
                 hrm_gen_ids.add(tid)
 
             if step == 0:
@@ -267,28 +373,53 @@ def run_benchmark(
         r.total_time_s = total
         r.ttft_s = ttft
         r.tokens_per_sec = (step + 1) / max(total, 1e-10)
+        decode_time = max(total - ttft, 1e-10)
+        r.decoding_tps = (step + 1) / decode_time
+        r.generation_tps = (r.prompt_tokens + step + 1) / max(total, 1e-10)
         r.memory_mb = maybe_get_memory_mb()
+        if model in ("ouro", "fused"):
+            r.ouro_ppl = _quick_ppl(text, ouro_model, ouro_tok, device)
+        if model in ("hrm", "fused"):
+            hrm_formatted = format_hrm_prompt(text, "direct")
+            r.hrm_ppl = _quick_ppl(hrm_formatted, hrm_model, hrm_tok, device)
+        if model == "fused":
+            r.fused_ppl = (r.ouro_ppl + r.hrm_ppl) / 2
+        if model == "fused" and n_kl_steps > 0:
+            r.avg_kl_oh = total_kl_oh / n_kl_steps
+            r.avg_kl_ho = total_kl_ho / n_kl_steps
+            r.avg_jsd = total_jsd / n_kl_steps
+            r.avg_fusion_gain = total_gain / n_kl_steps
+            r.fusion_win_rate = fusion_wins / n_kl_steps
+            r.oracle_rate = oracle_matches / n_kl_steps
+            r.fused_entropy = total_entropy / n_kl_steps
         results.append(r)
 
         label = f"{model}/{strategy}"
         print(
-            f"  {label:30s}  {r.tokens_per_sec:7.1f} tok/s  "
+            f"  {label:30s}  decode={r.decoding_tps:7.1f} tok/s  "
+            f"gen={r.generation_tps:7.1f} tok/s  "
             f"TTFT={r.ttft_s * 1000:.0f}ms  mem={r.memory_mb:.0f}MB",
             file=sys.stderr,
         )
+
+    if cache:
+        _save_cache(ck, "speed", results)
 
     return results
 
 
 def format_table(results: list[BenchmarkResult]) -> str:
     lines = []
-    lines.append(f"{'Config':30s}  {'tok/s':>7s}  {'TTFT':>6s}  {'Tokens':>6s}  {'Mem':>6s}")
-    lines.append("-" * 65)
+    lines.append(
+        f"{'Config':30s}  {'Decode':>8s}  {'Gen':>8s}  {'FusedPPL':>9s}  {'KL(o>h)':>8s}  {'JSD':>6s}  {'WinRate':>8s}  {'Gain':>8s}  {'Oracle':>8s}  {'Entropy':>8s}"
+    )
+    lines.append("-" * 115)
     for r in results:
         label = f"{r.model}/{r.strategy}"
         lines.append(
-            f"{label:30s}  {r.tokens_per_sec:7.1f}  {r.ttft_s * 1000:4.0f}ms  "
-            f"{r.tokens_generated:5d}   {r.memory_mb:5.0f}MB"
+            f"{label:30s}  {r.decoding_tps:7.1f}  {r.generation_tps:7.1f}  "
+            f"{r.fused_ppl:9.1f}  {r.avg_kl_oh:8.3f}  {r.avg_jsd:6.3f}  "
+            f"{r.fusion_win_rate:7.1%}  {r.avg_fusion_gain:+7.3f}  {r.oracle_rate:7.1%}  {r.fused_entropy:8.1f}"
         )
     return "\n".join(lines)
 
@@ -320,16 +451,30 @@ def run_robustness_benchmark(
     _local: bool = True,
     base_dir: str = "",
     battery: list[dict[str, str]] | None = None,
+    cache: bool = False,
+    device: str = "auto",
 ) -> list[RobustnessResult]:
     if battery is None:
         battery = ROBUSTNESS_BATTERY
+
+    if cache:
+        ck = _cache_key({
+            "max_new_tokens": max_new_tokens, "temperature": temperature,
+            "top_k": top_k, "threshold": threshold, "ouro_weight": ouro_weight,
+            "battery": [e["prompt"] for e in battery],
+        })
+        cached = _load_cache(ck, "robustness")
+        if cached is not None:
+            print(f"  (loaded robustness cache {ck})", file=sys.stderr)
+            return [RobustnessResult(**d) for d in cached]
 
     import torch
     from tokenizers import Tokenizer
     from transformers import AutoConfig, AutoModelForCausalLM
 
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k
-    from llm_fusion.generate import format_hrm_prompt, patch_ouro_model
+    from llm_fusion.generate import format_hrm_prompt
+    from llm_fusion.loader import patch_ouro_model
     from llm_fusion.metrics import fusion_gain as _calc_gain
     from llm_fusion.metrics import parent_prob_for_token
     from llm_fusion.token_matcher import TokenMatcher
@@ -341,8 +486,9 @@ def run_robustness_benchmark(
     ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
     hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.bfloat16 if device == "cpu" else torch.float16
 
     ouro_model_path = str(bd / "Ouro-1.4B")
     ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
@@ -431,7 +577,7 @@ def run_robustness_benchmark(
                 break
 
         ouro_ppl = _quick_ppl(prompt, ouro_model, ouro_tok, device)
-        hrm_ppl = _quick_ppl(prompt, hrm_model, hrm_tok, device)
+        hrm_ppl = _quick_ppl(format_hrm_prompt(prompt, "direct"), hrm_model, hrm_tok, device)
 
         results.append(
             RobustnessResult(
@@ -450,6 +596,9 @@ def run_robustness_benchmark(
                 generated_len=n_steps,
             )
         )
+
+    if cache:
+        _save_cache(ck, "robustness", results)
 
     return results
 
@@ -534,6 +683,17 @@ def main() -> None:
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--debug", action="store_true", help="Debug output")
+    parser.add_argument(
+        "--benchmark-cache",
+        action="store_true",
+        help="Cache results to .benchmark_cache/ and load from cache if available",
+    )
+    parser.add_argument(
+        "--device",
+        default="auto",
+        choices=["cpu", "cuda", "auto"],
+        help="Device to run on (default: auto)",
+    )
     args = parser.parse_args()
 
     level = logging.DEBUG if args.debug else (logging.INFO if args.verbose else logging.WARNING)
@@ -551,6 +711,8 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             temperature=args.temp,
             _local=True,
+            cache=args.benchmark_cache,
+            device=args.device,
         )
         print("\n" + format_robustness_table(results))
     else:
@@ -558,6 +720,8 @@ def main() -> None:
             text=args.prompt,
             max_new_tokens=args.max_new_tokens,
             temperature=args.temp,
+            cache=args.benchmark_cache,
+            device=args.device,
         )
         print("\n" + format_table(results))
 

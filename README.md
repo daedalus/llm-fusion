@@ -44,11 +44,11 @@ The fusion always operates in HRM's vocabulary space.
 
 Five fusion strategies are implemented in clean, well-separated private methods on `Fuser`:
 
-- **average** — weighted softmax blend (default `ouro_weight=0.5`)
+- **average** — weighted softmax blend (`ouro_weight=0.5`)
+- **dynamic** — Ouro weight decays linearly from initial to final over the generation steps **(default, best win rate)**
 - **product** — Product of Experts (multiplies probabilities, strongly penalizes tokens either model dislikes)
 - **min-entropy** — routes each token to whichever model is more confident
 - **cascade** — uses Ouro unless its top-1 probability falls below a threshold, then defers to HRM
-- **dynamic** — Ouro weight decays linearly from initial to final over the generation steps
 
 ## Install
 
@@ -59,7 +59,7 @@ pip install -e ".[test]"
 ## Usage
 
 ```bash
-# Fused (weighted average, default)
+# Fused (dynamic strategy, default)
 python -m llm_fusion --local "France's capital city is"
 
 # Ouro only
@@ -75,6 +75,9 @@ llm-fusion --local "Python was created by"
 ### Fusion Strategies
 
 ```bash
+# Average — weighted softmax blend (ouro_weight=0.5)
+python -m llm_fusion --strategy average --local "The meaning of life is"
+
 # Product of Experts — kills tokens either model dislikes
 python -m llm_fusion --strategy product --local "The meaning of life is"
 
@@ -84,7 +87,7 @@ python -m llm_fusion --strategy min-entropy --local "The capital of Japan is"
 # Cascade — try Ouro first, fall back to HRM if Ouro's top prob < threshold
 python -m llm_fusion --strategy cascade --cascade-threshold 0.5 --local "Explain quantum computing"
 
-# Dynamic — Ouro weight linearly decays over generation steps
+# Dynamic (default) — Ouro weight linearly decays over generation steps
 python -m llm_fusion --strategy dynamic --dynamic-initial-weight 0.8 --dynamic-final-weight 0.2 --local "Once upon a time"
 ```
 
@@ -127,12 +130,57 @@ llm-fusion-benchmark
 # Custom prompt and token count
 python -m llm_fusion benchmark --prompt "Hello world" -n 100
 
+# Cache results to .benchmark_cache/ (loads from cache on subsequent runs)
+python -m llm_fusion benchmark --benchmark-cache
+
+# Specify device (default: auto-detect)
+python -m llm_fusion benchmark --device cpu
+python -m llm_fusion benchmark --device cuda
+
 # Run robustness benchmark on a diverse battery of 25+ prompts
 # Measures: perplexity, fusion gain, win rate, KL divergence
 # Reports aggregated by category (factual, reasoning, math, code, etc.)
 python -m llm_fusion benchmark --robustness
 llm-fusion-benchmark --robustness
 ```
+
+Benchmark output includes speed + quality metrics per config:
+
+| Metric | Description |
+|--------|-------------|
+| `Decode` | Tokens/sec during generation (after first token) |
+| `Gen` | Tokens/sec including prompt processing |
+| `FusedPPL` | Average of Ouro and HRM perplexity |
+| `KL(o>h)` | Mean KL(Ouro \|\| HRM) per step |
+| `JSD` | Jensen-Shannon divergence (symmetric, 0-1) |
+| `WinRate` | % of steps where fusion prob > max(parent probs) |
+| `Gain` | Mean log-ratio vs best parent (positive = fusion helps) |
+| `Oracle` | % of steps where Ouro's prob >= HRM's (model agreement) |
+| `Entropy` | Mean entropy of the fused distribution |
+
+### Benchmark Results
+
+Benchmark on the default prompt ("The quick brown fox jumps over the lazy dog"), 20 tokens, CPU:
+
+| Config | Decode | Gen | FusedPPL | KL(o>h) | JSD | WinRate | Gain | Oracle | Entropy |
+|--------|--------|-----|----------|---------|-----|---------|------|--------|---------|
+| ouro/average | 1.1 | 1.5 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
+| hrm/average | 1.5 | 2.2 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
+| fused/average | 0.5 | 0.7 | 85.8 | 17.637 | 0.612 | 15.0% | -0.579 | 15.0% | 2.8 |
+| fused/product | 0.6 | 0.8 | 85.8 | 20.816 | 0.693 | 0.0% | -1.552 | 50.0% | 2.6 |
+| fused/min-entropy | 0.5 | 0.7 | 85.8 | 17.750 | 0.623 | 5.0% | +0.000 | 5.0% | 2.6 |
+| fused/cascade | 0.6 | 0.8 | 85.8 | 17.699 | 0.622 | 15.0% | +0.000 | 15.0% | 2.8 |
+| **fused/dynamic** | **0.6** | **0.8** | **85.8** | **15.580** | **0.578** | **65.0%** | **+0.141** | **50.0%** | **2.8** |
+
+**Dynamic is the best strategy** — 65% win rate, positive fusion gain (+0.141), lowest JSD (0.578).
+
+| Strategy | WinRate | Gain | Oracle | Interpretation |
+|----------|---------|------|--------|----------------|
+| **dynamic** | **65.0%** | **+0.141** | **50.0%** | **Best** — fusion helps more often than not |
+| average | 15.0% | -0.579 | 15.0% | Fusion mostly hurts |
+| cascade | 15.0% | +0.000 | 15.0% | Neutral — defers when Ouro is unsure |
+| min-entropy | 5.0% | +0.000 | 5.0% | Almost never picks fusion |
+| product | 0.0% | -1.552 | 50.0% | **Worst** — strongly penalizes both models |
 
 ### Parameters
 
@@ -146,7 +194,7 @@ llm-fusion-benchmark --robustness
 | `--ouro-weight` | `0.5` | Ouro weight (average strategy) |
 | `--rep-penalty` | `1.0` | Repetition penalty (`>1` discourages repeats) |
 | `--condition` | `direct` | HRM condition: `direct`, `cot`, `noisy`, `synth` |
-| `--strategy` | `average` | Fusion: `average`, `product`, `min-entropy`, `cascade`, `dynamic` |
+| `--strategy` | `dynamic` | Fusion: `average`, `product`, `min-entropy`, `cascade`, `dynamic` |
 | `--cascade-threshold` | `0.5` | Ouro top-prob threshold for cascade strategy |
 | `--dynamic-initial-weight` | `0.8` | Starting Ouro weight for dynamic strategy |
 | `--dynamic-final-weight` | `0.2` | Final Ouro weight for dynamic strategy |
@@ -160,11 +208,11 @@ llm-fusion-benchmark --robustness
 
 | Strategy | Description |
 |----------|-------------|
+| `dynamic` | **(default)** Linear decay of Ouro weight from `initial` to `final` over generation steps |
 | `average` | Weighted average of Ouro and HRM logit distributions |
 | `product` | Product of Experts — multiply probabilities, kills tokens either model dislikes |
 | `min-entropy` | Per-token routing to the more confident model (lower entropy) |
 | `cascade` | Try Ouro first; fall back to HRM if Ouro's top prob is below threshold |
-| `dynamic` | Linear decay of Ouro weight from `initial` to `final` over generation steps |
 
 ## Requirements
 

@@ -46,7 +46,7 @@ class Fuser:
         ouro_weight: float = 0.5,
         top_k: int = 50,
         threshold: float = 0.01,
-        strategy: str = "average",
+        strategy: str = "dynamic",
         cascade_threshold: float = 0.5,
         dynamic_initial_weight: float = 0.8,
         dynamic_final_weight: float = 0.2,

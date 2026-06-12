@@ -24,6 +24,7 @@ htmlcov/
 *.swp
 *.swo
 .hypothesis/
+.benchmark_cache/
 # Model weight files (tracked via git LFS or separate)
 *.safetensors
 *.lock
