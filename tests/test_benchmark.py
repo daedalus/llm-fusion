@@ -35,6 +35,33 @@ class TestBenchmarkResult:
         )
         assert r.tokens_per_sec == 25.0
 
+    def test_new_metric_fields(self) -> None:
+        r = BenchmarkResult(
+            model="fused",
+            strategy="dynamic",
+            ouro_ppl=3.3,
+            hrm_ppl=168.0,
+            fused_ppl=85.8,
+            avg_kl_oh=17.6,
+            avg_kl_ho=15.5,
+            avg_jsd=0.6,
+            fusion_win_rate=0.76,
+            avg_fusion_gain=1.6,
+            oracle_rate=0.5,
+            fused_entropy=2.8,
+        )
+        assert r.ouro_ppl == 3.3
+        assert r.hrm_ppl == 168.0
+        assert r.fused_ppl == 85.8
+        assert r.fusion_win_rate == 0.76
+        assert r.avg_fusion_gain == 1.6
+        assert r.oracle_rate == 0.5
+        assert r.fused_entropy == 2.8
+
+    def test_extra_dict(self) -> None:
+        r = BenchmarkResult(model="ouro", extra={"key": "value"})
+        assert r.extra["key"] == "value"
+
 
 class TestFormatTable:
     def test_empty(self) -> None:
@@ -148,3 +175,31 @@ class TestFormatRobustnessTable:
         r = RobustnessResult(avg_fusion_gain=-0.1)
         table = format_robustness_table([r])
         assert "NO" in table
+
+
+class TestFormatTableNewColumns:
+    def test_table_shows_new_columns(self) -> None:
+        r = BenchmarkResult(
+            model="fused",
+            strategy="dynamic",
+            decoding_tps=1.4,
+            generation_tps=1.8,
+            fused_ppl=85.8,
+            avg_kl_oh=17.6,
+            avg_jsd=0.6,
+            fusion_win_rate=0.76,
+            avg_fusion_gain=1.6,
+            oracle_rate=0.5,
+            fused_entropy=2.8,
+        )
+        table = format_table([r])
+        assert "FusedPPL" in table
+        assert "KL(o>h)" in table
+        assert "JSD" in table
+        assert "WinRate" in table
+        assert "Gain" in table
+        assert "Oracle" in table
+        assert "Entropy" in table
+        assert "85.8" in table
+        assert "76.0%" in table
+        assert "+1.600" in table

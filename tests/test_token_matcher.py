@@ -74,6 +74,39 @@ class TestTokenMatcherMapping:
         output = matcher.format_match(m, "OURO", 335)
         assert "✓" in output or "~" in output
 
+    def test_format_match_without_src_id(self, matcher) -> None:
+        m = matcher.ouro_to_hrm(335)
+        output = matcher.format_match(m, "OURO")
+        assert "OURO" in output
+
+    def test_format_match_with_note(self, matcher) -> None:
+        m = matcher.ouro_to_hrm(0)
+        output = matcher.format_match(m, "OURO", 0)
+        assert "#" in output or "✓" in output
+
+
+class TestNormalizeBPE:
+    def test_normalize_bpe_replaces_gpt2_space(self, matcher) -> None:
+        assert TokenMatcher._normalize_bpe("\u0120hello") == " hello"
+
+    def test_normalize_bpe_no_change(self, matcher) -> None:
+        assert TokenMatcher._normalize_bpe("hello") == "hello"
+
+    def test_normalize_bpe_empty(self, matcher) -> None:
+        assert TokenMatcher._normalize_bpe("") == ""
+
+
+class TestNormalizeCandidates:
+    def test_starts_with_gpt2_space(self, matcher) -> None:
+        candidates = matcher._normalize_candidates("\u0120the")
+        assert "the" in candidates
+        assert " the" in candidates
+        assert "\u0120the" in candidates
+
+    def test_no_gpt2_space(self, matcher) -> None:
+        candidates = matcher._normalize_candidates("the")
+        assert candidates == ["the"]
+
 
 class TestRoundTrip:
     def test_ouro_round_trip(self, matcher) -> None:
@@ -103,3 +136,45 @@ class TestRoundTrip:
     def test_map_sequence_empty_encode(self, matcher) -> None:
         m = matcher.map_sequence([], "ouro")
         assert m.confidence == "approx"
+
+    def test_ouro_to_hrm_special_no_crosswalk(self, matcher) -> None:
+        hrm_special_no_ouro = None
+        for tid, s in matcher.hrm_special.items():
+            if s not in {v for v in matcher.ouro_special.values()}:
+                hrm_special_no_ouro = tid
+                break
+        if hrm_special_no_ouro is not None:
+            m = matcher.hrm_to_ouro(hrm_special_no_ouro)
+            assert m.confidence == "mismatch"
+            assert m.target_ids == []
+
+    def test_map_sequence_with_specials(self, matcher) -> None:
+        ouro_ids = list(matcher.ouro_special.keys())[:3]
+        m = matcher.map_sequence(ouro_ids, "ouro")
+        assert len(m.target_ids) > 0
+
+    def test_map_sequence_hrm_with_specials(self, matcher) -> None:
+        hrm_ids = list(matcher.hrm_special.keys())[:3]
+        m = matcher.map_sequence(hrm_ids, "hrm")
+        assert len(m.target_ids) > 0
+
+    def test_map_sequence_text_preserved(self, matcher) -> None:
+        text = "Hello, world!"
+        ouro_ids = matcher.ouro_tok.encode(text).ids
+        m_oh = matcher.map_sequence(ouro_ids, "ouro")
+        m_ho = matcher.map_sequence(m_oh.target_ids, "hrm")
+        reconstructed = matcher.ouro_tok.decode(m_ho.target_ids, skip_special_tokens=False)
+        assert reconstructed == text
+
+    def test_map_sequence_hrm_text_preserved(self, matcher) -> None:
+        text = "Hello, world!"
+        hrm_ids = matcher.hrm_tok.encode(text).ids
+        m_ho = matcher.map_sequence(hrm_ids, "hrm")
+        m_oh = matcher.map_sequence(m_ho.target_ids, "ouro")
+        reconstructed = matcher.hrm_tok.decode(m_oh.target_ids, skip_special_tokens=False)
+        assert reconstructed == text
+
+    def test_map_sequence_token_count_changed_logs(self, matcher) -> None:
+        ouro_ids = matcher.ouro_tok.encode(" the").ids
+        m = matcher.map_sequence(ouro_ids, "ouro")
+        assert len(m.target_ids) != len(ouro_ids)

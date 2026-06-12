@@ -289,3 +289,102 @@ class TestFuser:
         avg_results = avg.fuse_logits(ouro_logits, hrm_logits)
         prod_results = fuser.fuse_logits(ouro_logits, hrm_logits)
         assert len(prod_results) <= len(avg_results) + 1
+
+
+class TestAdaptive:
+    def test_adaptive_weights_by_entropy(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="adaptive")
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 10.0
+        hrm_logits[371] = 10.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(results) > 0
+
+    def test_adaptive_empty_logits(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="adaptive")
+        results = fuser.fuse_logits([], [])
+        assert results == []
+
+    def test_adaptive_low_entropy_fallback(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="adaptive")
+        ouro_logits = [-100.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [-100.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[0] = 100.0
+        hrm_logits[0] = 100.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(results) > 0
+
+
+class TestConfidence:
+    def test_confidence_weights_by_top1(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="confidence")
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 10.0
+        hrm_logits[371] = 5.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(results) > 0
+
+    def test_confidence_empty_logits(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="confidence")
+        results = fuser.fuse_logits([], [])
+        assert results == []
+
+
+class TestHybrid:
+    def test_hybrid_combines_dynamic_and_confidence(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="hybrid")
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 10.0
+        hrm_logits[371] = 10.0
+        fuser.current_step = 0
+        results0 = fuser.fuse_logits(ouro_logits, hrm_logits)
+        fuser.current_step = 50
+        results50 = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(results0) > 0
+        assert len(results50) > 0
+
+    def test_hybrid_empty_logits(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="hybrid")
+        results = fuser.fuse_logits([], [])
+        assert results == []
+
+
+class TestSampleTokenPair:
+    def test_sample_token_pair_returns_both_ids(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="average")
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        hrm_logits[371] = 10.0
+        ouro_logits[335] = 5.0
+        hrm_id, ouro_id, token_str, prob = fuser.sample_token_pair(ouro_logits, hrm_logits, temperature=0.0)
+        assert hrm_id >= 0
+        assert ouro_id >= 0
+        assert prob > 0
+
+    def test_sample_token_pair_empty_logits(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="average")
+        hrm_id, ouro_id, token_str, prob = fuser.sample_token_pair([], [], temperature=0.0)
+        assert hrm_id == 0
+        assert prob == 0.0
+
+    def test_sample_token_with_rng_none(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="average")
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        hrm_logits[371] = 10.0
+        tid, token_str, prob = fuser.sample_token(ouro_logits, hrm_logits, temperature=0.0, rng=None)
+        assert tid == 371
+
+    def test_sample_token_with_temperature(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="average", ouro_weight=0.0)
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        hrm_logits[371] = 10.0
+        hrm_logits[372] = 9.0
+        import random
+        rng = random.Random(42)
+        tid, token_str, prob = fuser.sample_token([], hrm_logits, temperature=1.0, rng=rng)
+        assert tid in (371, 372)
+        assert prob > 0
