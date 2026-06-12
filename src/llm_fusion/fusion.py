@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 from typing import TYPE_CHECKING
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from tokenizers import Tokenizer
@@ -330,6 +333,10 @@ class Fuser:
         rng: random.Random | None = None,
     ) -> tuple[int, int, str, float]:
         hrm_id, token_str, prob = self.sample_token(ouro_logits, hrm_logits, temperature, rng)
-        match = self.matcher.hrm_to_ouro(hrm_id)
-        ouro_id = match.target_ids[0] if match.target_ids else 0
+        match = self.matcher.map_sequence([hrm_id], "hrm")
+        if match.target_ids:
+            ouro_id = match.target_ids[0]
+        else:
+            ouro_id = 0
+            log.warning("sample_token_pair: hrm_to_ouro returned empty for hrm[%d] %r", hrm_id, token_str)
         return hrm_id, ouro_id, token_str, prob

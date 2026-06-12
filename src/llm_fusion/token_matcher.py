@@ -146,7 +146,7 @@ class TokenMatcher:
                 src, dst, decoded, token_id,
             )
             return Match(
-                "approx",
+                "invalid",
                 [],
                 source_str=token_str,
                 target_str="",
@@ -155,9 +155,19 @@ class TokenMatcher:
 
         ok, msg = self._round_trip_check(src, token_id, target_ids)
         target_str = dst_tok.decode(target_ids, skip_special_tokens=False)
-        if ok:
-            return Match("approx", target_ids, source_str=token_str, target_str=target_str, note=msg)
-        return Match("mismatch", target_ids, source_str=token_str, target_str=target_str, note=msg)
+        if not ok:
+            return Match("mismatch", target_ids, source_str=token_str, target_str=target_str, note=msg)
+
+        orig_len = len(self._normalize_bpe(decoded))
+        mapped_len = len(self._normalize_bpe(target_str))
+        if mapped_len < orig_len:
+            return Match(
+                "mismatch", target_ids,
+                source_str=token_str, target_str=target_str,
+                note=f"truncated {orig_len}->{mapped_len} chars for {decoded!r}",
+            )
+
+        return Match("approx", target_ids, source_str=token_str, target_str=target_str, note=msg)
 
     def ouro_to_hrm(self, token_id: int) -> Match:
         return self._map_single(token_id, "ouro", "hrm")
@@ -226,10 +236,12 @@ class TokenMatcher:
                 match = self._map_single(tid, src, dst)
                 if match.target_ids:
                     all_target_ids.extend(match.target_ids)
-                if match.source_str:
-                    source_parts.append(match.source_str)
-                if match.target_str:
-                    target_parts.append(match.target_str)
+                    if match.source_str:
+                        source_parts.append(match.source_str)
+                    if match.target_str:
+                        target_parts.append(match.target_str)
+                else:
+                    run.append(tid)
                 overall = _worse(overall, match.confidence)
             else:
                 run.append(tid)
