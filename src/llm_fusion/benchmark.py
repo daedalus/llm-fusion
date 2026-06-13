@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     import torch
 
 BENCHMARK_CACHE_DIR = Path(__file__).resolve().parent.parent.parent / ".benchmark_cache"
+RESULTS_DIR = Path(__file__).resolve().parent.parent.parent / "results"
 
 try:
     from ouro_cache_fix import UniversalTransformerCache  # noqa: F401
@@ -45,6 +46,25 @@ def _save_cache(key: str, bench_type: str, results: list[Any]) -> None:
     path = BENCHMARK_CACHE_DIR / f"{bench_type}_{key}.json"
     data = [asdict(r) if hasattr(r, "__dataclass_fields__") else r for r in results]
     path.write_text(json.dumps(data, indent=2, default=str))
+
+def save_results(results: list[Any], tag: str = "speed") -> Path:
+    """Append benchmark results to a timestamped JSON file in results/."""
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    out = RESULTS_DIR / f"benchmark_{tag}_{ts}.json"
+    data = [asdict(r) if hasattr(r, "__dataclass_fields__") else r for r in results]
+    out.write_text(json.dumps(data, indent=2, default=str))
+    print(f"  Results saved to {out}", file=sys.stderr)
+    return out
+
+
+def load_results(path: str | Path) -> list[dict[str, Any]]:
+    """Load benchmark results from a JSON file."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Results file not found: {p}")
+    return json.loads(p.read_text())
+
 
 ROBUSTNESS_BATTERY: list[dict[str, str]] = [
     # Factual / knowledge
@@ -678,6 +698,7 @@ def run_graph_benchmark(
     temperature: float = 0.0,
     cache: bool = False,
     device: str = "auto",
+    results_file: str | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
 
@@ -693,18 +714,27 @@ def run_graph_benchmark(
     }
 
     all_results: dict[int, list[BenchmarkResult]] = {}
-    for n in token_counts:
-        print(f"\nRunning benchmark for n={n}...", file=sys.stderr)
-        configs = [{"model": "fused", "strategy": s} for s in strategies]
-        results = run_benchmark(
-            text=text,
-            max_new_tokens=n,
-            temperature=temperature,
-            cache=cache,
-            device=device,
-            configs=configs,
-        )
-        all_results[n] = results
+
+    if results_file:
+        raw = load_results(results_file)
+        for d in raw:
+            n = d.get("tokens_generated", 0)
+            all_results.setdefault(n, []).append(BenchmarkResult(**d))
+        token_counts = sorted(all_results.keys())
+        print(f"  Loaded {len(raw)} results from {results_file}", file=sys.stderr)
+    else:
+        for n in token_counts:
+            print(f"\nRunning benchmark for n={n}...", file=sys.stderr)
+            configs = [{"model": "fused", "strategy": s} for s in strategies]
+            results = run_benchmark(
+                text=text,
+                max_new_tokens=n,
+                temperature=temperature,
+                cache=cache,
+                device=device,
+                configs=configs,
+            )
+            all_results[n] = results
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
     fig.suptitle("Fusion Metrics vs Completion Tokens", fontsize=14)
@@ -766,6 +796,16 @@ def main() -> None:
         action="store_true",
         help="Run benchmarks at multiple token counts and plot metrics vs n",
     )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="Save results to results/ directory (always appends a timestamped JSON)",
+    )
+    parser.add_argument(
+        "--results-file",
+        default=None,
+        help="Path to a results JSON file to ingest (for --graph or display)",
+    )
     args = parser.parse_args()
 
     level = logging.DEBUG if args.debug else (logging.INFO if args.verbose else logging.WARNING)
@@ -786,6 +826,7 @@ def main() -> None:
             cache=args.benchmark_cache,
             device=args.device,
         )
+        tag = "robustness"
         print("\n" + format_robustness_table(results))
     else:
         results = run_benchmark(
@@ -795,7 +836,11 @@ def main() -> None:
             cache=args.benchmark_cache,
             device=args.device,
         )
+        tag = "speed"
         print("\n" + format_table(results))
+
+    if args.save:
+        save_results(results, tag=tag)
 
     if args.graph:
         run_graph_benchmark(
@@ -803,6 +848,7 @@ def main() -> None:
             temperature=args.temp,
             cache=args.benchmark_cache,
             device=args.device,
+            results_file=args.results_file,
         )
 
 
