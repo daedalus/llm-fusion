@@ -350,6 +350,9 @@ def generate(
     use_ouro_cache = load_ouro and (model == "fused" or HAS_OURO_CACHE)
     use_hrm_cache = load_hrm and model == "fused"
 
+    _single_token = torch.tensor([[0]], device=device, dtype=torch.long) if (load_ouro or load_hrm) else None
+    _hrm_tti_1 = torch.ones(1, dtype=torch.long, device=device).unsqueeze(0) if load_hrm else None
+
     for step in range(max_new_tokens):
         log.debug("Step %d, generated_text length %d, generated_text=%s", step, len(generated_text), repr(generated_text[-40:]))
         if load_ouro:
@@ -358,10 +361,16 @@ def generate(
                 if step > 0 and ouro_cache is not None:
                     ouro_kwargs["past_key_values"] = ouro_cache
                     ouro_kwargs["use_cache"] = True
-                ouro_out = ouro_model(
-                    input_ids=torch.tensor([ouro_ids], device=device),
-                    **ouro_kwargs,
-                )
+                    _single_token[0] = ouro_ids[0]
+                    ouro_out = ouro_model(
+                        input_ids=_single_token,
+                        **ouro_kwargs,
+                    )
+                else:
+                    ouro_out = ouro_model(
+                        input_ids=torch.tensor([ouro_ids], device=device),
+                        **ouro_kwargs,
+                    )
             ouro_logits_t = ouro_out.logits[0, -1, :]
             if step == 0 and use_ouro_cache:
                 ouro_cache = ouro_out.past_key_values
@@ -372,17 +381,23 @@ def generate(
                 )
 
         if load_hrm:
-            hrm_tti = torch.ones(len(hrm_ids_list), dtype=torch.long, device=device).unsqueeze(0)
             with torch.no_grad():
                 hrm_kwargs = {}
                 if step > 0 and hrm_cache is not None:
                     hrm_kwargs["past_key_values"] = hrm_cache
                     hrm_kwargs["use_cache"] = True
-                hrm_out = hrm_model(
-                    input_ids=torch.tensor([hrm_ids_list], device=device),
-                    token_type_ids=hrm_tti,
-                    **hrm_kwargs,
-                )
+                    _single_token[0] = hrm_ids_list[0]
+                    hrm_out = hrm_model(
+                        input_ids=_single_token,
+                        token_type_ids=_hrm_tti_1,
+                        **hrm_kwargs,
+                    )
+                else:
+                    hrm_tti = torch.ones(len(hrm_ids_list), dtype=torch.long, device=device).unsqueeze(0)
+                    hrm_out = hrm_model(
+                        input_ids=torch.tensor([hrm_ids_list], device=device),
+                        token_type_ids=hrm_tti,
+                    )
             hrm_logits_t = hrm_out.logits[0, -1, :]
             if step == 0 and use_hrm_cache:
                 hrm_cache = hrm_out.past_key_values

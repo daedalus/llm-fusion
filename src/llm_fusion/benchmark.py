@@ -315,6 +315,9 @@ def run_benchmark(
         ttft = 0.0
         t0 = time.time()
 
+        _single_token = torch.tensor([[0]], device=device, dtype=torch.long)
+        _hrm_tti_1 = torch.ones(1, dtype=torch.long, device=device).unsqueeze(0)
+
         for step in range(max_new_tokens):
             if model in ("fused", "ouro"):
                 with torch.no_grad():
@@ -322,8 +325,9 @@ def run_benchmark(
                     if step > 0 and ouro_cache is not None:
                         ouro_kwargs["past_key_values"] = ouro_cache
                         ouro_kwargs["use_cache"] = True
+                    _single_token[0] = ouro_ids[0]
                     ouro_out = ouro_model(
-                        input_ids=torch.tensor([ouro_ids], device=device),
+                        input_ids=_single_token,
                         **ouro_kwargs,
                     )
                 ouro_logits_t = ouro_out.logits[0, -1, :]
@@ -331,19 +335,25 @@ def run_benchmark(
                     ouro_cache = ouro_out.past_key_values
 
             if model in ("fused", "hrm"):
-                hrm_tti = torch.ones(
-                    len(hrm_ids_list), dtype=torch.long, device=device
-                ).unsqueeze(0)
                 with torch.no_grad():
                     hrm_kwargs: dict[str, Any] = {}
                     if step > 0 and hrm_cache is not None:
                         hrm_kwargs["past_key_values"] = hrm_cache
                         hrm_kwargs["use_cache"] = True
-                    hrm_out = hrm_model(
-                        input_ids=torch.tensor([hrm_ids_list], device=device),
-                        token_type_ids=hrm_tti,
-                        **hrm_kwargs,
-                    )
+                        _single_token[0] = hrm_ids_list[0]
+                        hrm_out = hrm_model(
+                            input_ids=_single_token,
+                            token_type_ids=_hrm_tti_1,
+                            **hrm_kwargs,
+                        )
+                    else:
+                        hrm_tti = torch.ones(
+                            len(hrm_ids_list), dtype=torch.long, device=device
+                        ).unsqueeze(0)
+                        hrm_out = hrm_model(
+                            input_ids=torch.tensor([hrm_ids_list], device=device),
+                            token_type_ids=hrm_tti,
+                        )
                 hrm_logits_t = hrm_out.logits[0, -1, :]
                 if step == 0:
                     hrm_cache = hrm_out.past_key_values
@@ -360,27 +370,40 @@ def run_benchmark(
                 ouro_dist = dict(zip(ouro_top_ids, ouro_probs))
                 hrm_dist = dict(zip(hrm_top_ids, hrm_probs))
 
-                q_map_oh = {i: max(ouro_dist.get(h, 0.0), 1e-10) for h, _ in zip(hrm_top_ids, hrm_probs) for i in [h]}
-                total_kl_oh += sum(
-                    hp * math.log(hp / q_map_oh.get(hid, 1e-10))
-                    for hid, hp in zip(hrm_top_ids, hrm_probs) if hp > 0
-                )
-                q_map_ho = {i: max(hrm_dist.get(o, 0.0), 1e-10) for o, _ in zip(ouro_top_ids, ouro_probs) for i in [o]}
-                total_kl_ho += sum(
-                    op * math.log(op / q_map_ho.get(oid, 1e-10))
-                    for oid, op in zip(ouro_top_ids, ouro_probs) if op > 0
-                )
-
-                all_ids = set(ouro_dist) | set(hrm_dist)
-                m_dist = {tid: 0.5 * (ouro_dist.get(tid, 0.0) + hrm_dist.get(tid, 0.0)) for tid in all_ids}
-                total_jsd += 0.5 * compute_kl(ouro_dist, m_dist) + 0.5 * compute_kl(hrm_dist, m_dist)
-                total_entropy += -sum(p * math.log(max(p, 1e-10)) for p in m_dist.values())
+                _log_1e10 = math.log(1e-10)
+                kl_oh = 0.0
+                kl_ho = 0.0
+                jsd = 0.0
+                entropy = 0.0
+                for hid, hp in zip(hrm_top_ids, hrm_probs):
+                    if hp > 0:
+                        op = ouro_dist.get(hid, 0.0)
+                        kl_oh += hp * (math.log(hp) - math.log(max(op, 1e-10)))
+                        m = 0.5 * (hp + op)
+                        if m > 0:
+                            ml = math.log(m)
+                            jsd += 0.5 * hp * (math.log(hp) - ml)
+                            entropy -= m * ml
+                for oid, op in zip(ouro_top_ids, ouro_probs):
+                    if op > 0:
+                        hp = hrm_dist.get(oid, 0.0)
+                        kl_ho += op * (math.log(op) - math.log(max(hp, 1e-10)))
+                        m = 0.5 * (op + hp)
+                        if m > 0:
+                            ml = math.log(m)
+                            jsd += 0.5 * op * (math.log(op) - ml)
+                total_kl_oh += kl_oh
+                total_kl_ho += kl_ho
+                total_jsd += jsd
+                total_entropy += entropy
                 n_kl_steps += 1
 
                 fuser.current_step = step
-                hrm_tid, ouro_tid, token_str, prob = fuser.sample_token_pair(ouro_logits_t.tolist(), hrm_logits_t.tolist(), temperature)
+                ouro_logits_list = ouro_logits_t.tolist()
+                hrm_logits_list = hrm_logits_t.tolist()
+                hrm_tid, ouro_tid, token_str, prob = fuser.sample_token_pair(ouro_logits_list, hrm_logits_list, temperature)
 
-                ouro_p = parent_prob_for_token(ouro_logits_t.tolist(), hrm_tid, top_k)
+                ouro_p = parent_prob_for_token(ouro_logits_list, hrm_tid, top_k)
                 hrm_p = hrm_dist.get(hrm_tid, 0.0)
 
                 gain = _calc_gain(prob, ouro_p, hrm_p)
