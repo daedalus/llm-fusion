@@ -217,6 +217,7 @@ def run_benchmark(
             {"model": "fused", "strategy": "adaptive"},
             {"model": "fused", "strategy": "confidence"},
             {"model": "fused", "strategy": "hybrid"},
+            {"model": "fused", "strategy": "slerp"},
         ]
 
     if cache:
@@ -748,7 +749,7 @@ def run_graph_benchmark(
     import matplotlib.pyplot as plt
 
     token_counts = [10, 30, 50]
-    strategies = ["average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic"]
+    strategies = ["average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "slerp"]
     metrics = ["fusion_win_rate", "avg_fusion_gain", "avg_kl_oh", "avg_jsd", "fused_entropy"]
     metric_labels = {
         "fusion_win_rate": "Win Rate",

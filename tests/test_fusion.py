@@ -401,6 +401,51 @@ class TestMinPerplexity:
         assert results == []
 
 
+class TestSlerp:
+    def test_slerp_interpolates_between_models(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="slerp", ouro_weight=0.5)
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[100] = 5.0
+        hrm_logits[371] = 5.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(results) > 0
+
+    def test_slerp_at_zero_gives_hrm(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="slerp", ouro_weight=0.0)
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[100] = 10.0
+        hrm_logits[371] = 10.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        tids = [tid for tid, _, _ in results]
+        assert 371 in tids
+
+    def test_slerp_at_one_gives_ouro(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="slerp", ouro_weight=1.0)
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[100] = 10.0
+        hrm_logits[371] = 10.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        tids = [tid for tid, _, _ in results]
+        assert 114 in tids
+
+    def test_slerp_empty_logits(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="slerp")
+        results = fuser.fuse_logits([], [])
+        assert results == []
+
+    def test_slerp_parallel_vectors_fallback(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="slerp", ouro_weight=0.5)
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[0] = 5.0
+        hrm_logits[0] = 5.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(results) > 0
+
+
 class TestSampleTokenPair:
     def test_sample_token_pair_returns_both_ids(self, matcher) -> None:
         fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="average")

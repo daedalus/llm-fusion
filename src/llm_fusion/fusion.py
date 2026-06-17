@@ -85,7 +85,7 @@ class Fuser:
         self.hrm_weight = 1.0 - ouro_weight
         self.top_k = top_k
         self.threshold = threshold
-        valid = ("average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid")
+        valid = ("average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid", "slerp")
         if strategy not in valid:
             raise ValueError(f"Unknown strategy: {strategy!r}")
         self.strategy = strategy
@@ -208,6 +208,75 @@ class Fuser:
         filtered = [(tid, p) for tid, p in zip(ids, probs) if p >= self.threshold]
         return [(tid, p, self.ouro_tok.decode([tid])) for tid, p in filtered]
 
+    def _fuse_logits_slerp(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+        ouro_weight: float | None = None,
+    ) -> list[tuple[int, float, str]]:
+        import math
+
+        alpha = self.ouro_weight if ouro_weight is None else ouro_weight
+
+        ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
+        hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
+
+        ouro_aligned: dict[int, float] = {}
+        for oid, prob in zip(ouro_top_ids, ouro_probs):
+            match = self.matcher.ouro_to_hrm(oid)
+            if not match.target_ids:
+                continue
+            share = prob / len(match.target_ids)
+            for tid in match.target_ids:
+                ouro_aligned[tid] = ouro_aligned.get(tid, 0.0) + share
+
+        hrm_dict = dict(zip(hrm_top_ids, hrm_probs))
+        all_ids = set(ouro_aligned) | set(hrm_dict)
+
+        a = [ouro_aligned.get(tid, 0.0) for tid in all_ids]
+        b = [hrm_dict.get(tid, 0.0) for tid in all_ids]
+
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(x * x for x in b))
+
+        if norm_a < 1e-10 or norm_b < 1e-10:
+            return self._fuse_logits_average(ouro_logits, hrm_logits, alpha, 1.0 - alpha)
+
+        na = [x / norm_a for x in a]
+        nb = [x / norm_b for x in b]
+
+        dot = sum(x * y for x, y in zip(na, nb))
+        dot = max(-1.0, min(1.0, dot))
+        theta = math.acos(dot)
+
+        if theta < 1e-6:
+            t = alpha
+        else:
+            t = alpha
+
+        sin_theta = math.sin(theta)
+        if abs(sin_theta) < 1e-10:
+            blended = [t * x + (1.0 - t) * y for x, y in zip(na, nb)]
+        else:
+            blended = [
+                math.sin(t * theta) / sin_theta * x
+                + math.sin((1.0 - t) * theta) / sin_theta * y
+                for x, y in zip(na, nb)
+            ]
+
+        norm_blend = math.sqrt(sum(x * x for x in blended))
+        if norm_blend < 1e-10:
+            return self._fuse_logits_average(ouro_logits, hrm_logits, alpha, 1.0 - alpha)
+
+        fused = {}
+        for i, tid in enumerate(all_ids):
+            p = blended[i] / norm_blend
+            if p >= self.threshold:
+                fused[tid] = p
+
+        filtered = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+
     def _fuse_logits_cascade(
         self,
         ouro_logits: list[float],
@@ -322,6 +391,8 @@ class Fuser:
             return self._fuse_logits_confidence(ouro_logits, hrm_logits)
         if self.strategy == "hybrid":
             return self._fuse_logits_hybrid(ouro_logits, hrm_logits)
+        if self.strategy == "slerp":
+            return self._fuse_logits_slerp(ouro_logits, hrm_logits)
         return self._fuse_logits_average(ouro_logits, hrm_logits)
 
     def model_distributions(
