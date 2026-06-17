@@ -170,6 +170,8 @@ class BenchmarkResult:
     avg_fusion_gain: float = 0.0
     oracle_rate: float = 0.0
     fused_entropy: float = 0.0
+    ouro_tokens_used: int = 0
+    hrm_tokens_used: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -316,6 +318,8 @@ def run_benchmark(
         oracle_matches = 0
         total_entropy = 0.0
         n_kl_steps = 0
+        ouro_tokens_used = 0
+        hrm_tokens_used = 0
         ttft = 0.0
         t0 = time.time()
 
@@ -419,6 +423,18 @@ def run_benchmark(
                 hrm_ids_list = [hrm_tid]
                 ouro_ids = [ouro_tid]
                 hrm_gen_ids.add(hrm_tid)
+                if strategy in ("min-entropy", "min-perplexity") and fuser.last_routed_model == "ouro":
+                    ouro_tokens_used += 1
+                elif strategy in ("min-entropy", "min-perplexity") and fuser.last_routed_model == "hrm":
+                    hrm_tokens_used += 1
+                elif strategy == "cascade":
+                    if ouro_p >= hrm_p:
+                        ouro_tokens_used += 1
+                    else:
+                        hrm_tokens_used += 1
+                else:
+                    ouro_tokens_used += 1
+                    hrm_tokens_used += 1
             elif model == "ouro":
                 from llm_fusion.generate import sample_from_logits
 
@@ -462,6 +478,8 @@ def run_benchmark(
             r.fusion_win_rate = fusion_wins / n_kl_steps
             r.oracle_rate = oracle_matches / n_kl_steps
             r.fused_entropy = total_entropy / n_kl_steps
+        r.ouro_tokens_used = ouro_tokens_used
+        r.hrm_tokens_used = hrm_tokens_used
         results.append(r)
 
         label = f"{model}/{strategy}"
@@ -481,15 +499,15 @@ def run_benchmark(
 def format_table(results: list[BenchmarkResult]) -> str:
     lines = []
     lines.append(
-        f"{'Config':30s}  {'Decode':>8s}  {'Gen':>8s}  {'FusedPPL':>9s}  {'KL(o>h)':>8s}  {'JSD':>6s}  {'WinRate':>8s}  {'Gain':>8s}  {'Oracle':>8s}  {'Entropy':>8s}"
+        f"{'Config':30s}  {'Decode':>8s}  {'Gen':>8s}  {'FusedPPL':>9s}  {'KL(o>h)':>8s}  {'JSD':>6s}  {'WinRate':>8s}  {'Gain':>8s}  {'Oracle':>8s}  {'Entropy':>8s}  {'OuroTok':>8s}  {'HrmTok':>8s}"
     )
-    lines.append("-" * 115)
+    lines.append("-" * 143)
     for r in results:
         label = f"{r.model}/{r.strategy}"
         lines.append(
             f"{label:30s}  {r.decoding_tps:7.1f}  {r.generation_tps:7.1f}  "
             f"{r.fused_ppl:9.1f}  {r.avg_kl_oh:8.3f}  {r.avg_jsd:6.3f}  "
-            f"{r.fusion_win_rate:7.1%}  {r.avg_fusion_gain:+7.3f}  {r.oracle_rate:7.1%}  {r.fused_entropy:8.1f}"
+            f"{r.fusion_win_rate:7.1%}  {r.avg_fusion_gain:+7.3f}  {r.oracle_rate:7.1%}  {r.fused_entropy:8.1f}  {r.ouro_tokens_used:8d}  {r.hrm_tokens_used:8d}"
         )
     return "\n".join(lines)
 
