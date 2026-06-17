@@ -336,7 +336,7 @@ def generate(
     generated_text = ""
     ouro_gen_ids: set[int] = set()
     ouro_ids = list(ouro_prompt_ids) if load_ouro else []
-    prev_gen_text = ""
+    hrm_ids_list = list(hrm_ids) if load_hrm else []
 
     print(
         f"Prompt (Ouro: {len(ouro_prompt_ids) if load_ouro else 0} tok, "
@@ -346,46 +346,47 @@ def generate(
     print("-" * 60)
 
     ouro_cache = None
-    if HAS_OURO_CACHE and model != "fused" and load_ouro:
-        ouro_cache = UniversalTransformerCache()
+    hrm_cache = None
+    use_ouro_cache = load_ouro and (model == "fused" or HAS_OURO_CACHE)
+    use_hrm_cache = load_hrm and model == "fused"
 
     for step in range(max_new_tokens):
         log.debug("Step %d, generated_text length %d, generated_text=%s", step, len(generated_text), repr(generated_text[-40:]))
         if load_ouro:
-            if model == "fused":
-                new_part = generated_text[len(prev_gen_text):]
-                if not prev_gen_text:
-                    ouro_ids = ouro_prompt_ids + ouro_tok.encode(generated_text).ids
-                else:
-                    overlap = min(len(prev_gen_text), 32)
-                    resuffix = prev_gen_text[-overlap:] + new_part
-                    resuffix_ids = ouro_tok.encode(resuffix).ids
-                    keep = len(ouro_ids) - overlap
-                    ouro_ids = ouro_ids[:keep] + resuffix_ids
-                prev_gen_text = generated_text
             with torch.no_grad():
                 ouro_kwargs = {}
-                if ouro_cache is not None and step > 0:
+                if step > 0 and ouro_cache is not None:
                     ouro_kwargs["past_key_values"] = ouro_cache
                     ouro_kwargs["use_cache"] = True
                 ouro_out = ouro_model(
                     input_ids=torch.tensor([ouro_ids], device=device),
                     **ouro_kwargs,
                 )
-            ouro_logits = ouro_out.logits[0, -1, :].tolist()
+            ouro_logits_t = ouro_out.logits[0, -1, :]
+            if step == 0 and use_ouro_cache:
+                ouro_cache = ouro_out.past_key_values
+            ouro_logits = ouro_logits_t.tolist()
             if repetition_penalty != 1.0:
                 ouro_logits = apply_repetition_penalty(
                     ouro_logits, ouro_gen_ids, repetition_penalty
                 )
 
         if load_hrm:
-            hrm_tti = torch.ones(len(hrm_ids), dtype=torch.long, device=device).unsqueeze(0)
+            hrm_tti = torch.ones(len(hrm_ids_list), dtype=torch.long, device=device).unsqueeze(0)
             with torch.no_grad():
+                hrm_kwargs = {}
+                if step > 0 and hrm_cache is not None:
+                    hrm_kwargs["past_key_values"] = hrm_cache
+                    hrm_kwargs["use_cache"] = True
                 hrm_out = hrm_model(
-                    input_ids=torch.tensor([hrm_ids], device=device),
+                    input_ids=torch.tensor([hrm_ids_list], device=device),
                     token_type_ids=hrm_tti,
+                    **hrm_kwargs,
                 )
-            hrm_logits = hrm_out.logits[0, -1, :].tolist()
+            hrm_logits_t = hrm_out.logits[0, -1, :]
+            if step == 0 and use_hrm_cache:
+                hrm_cache = hrm_out.past_key_values
+            hrm_logits = hrm_logits_t.tolist()
             if repetition_penalty != 1.0:
                 hrm_logits = apply_repetition_penalty(hrm_logits, hrm_gen_ids, repetition_penalty)
 
@@ -407,17 +408,19 @@ def generate(
                     print(f" [gain=+{gain:.3f}]", end="", flush=True)
                 else:
                     print(f" [gain={gain:.3f}]", end="", flush=True)
-            hrm_ids.append(tid)
+            hrm_ids_list = [tid]
+            ouro_ids = [tid]
             hrm_gen_ids.add(tid)
+            ouro_gen_ids.add(tid)
             eos_id = HRM_EOS_ID
         elif model == "ouro":
             tid, token_str, prob = sample_from_logits(ouro_logits, ouro_tok, top_k, temperature, rng)
-            ouro_ids.append(tid)
+            ouro_ids = [tid]
             ouro_gen_ids.add(tid)
             eos_id = OURO_EOS_ID
         elif model == "hrm":
             tid, token_str, prob = sample_from_logits(hrm_logits, hrm_tok, top_k, temperature, rng)
-            hrm_ids.append(tid)
+            hrm_ids_list = [tid]
             hrm_gen_ids.add(tid)
             eos_id = HRM_EOS_ID
 

@@ -39,7 +39,7 @@ def load_models(
 
     bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16
+    dtype = torch.bfloat16 if device == "cpu" else torch.float16
 
     log = logging.getLogger(__name__)
     if debug:

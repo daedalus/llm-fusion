@@ -27,17 +27,40 @@ def compute_kl(p: dict[int, float], q: dict[int, float]) -> float:
     return kl
 
 
+def compute_kl_torch(
+    p_ids: list[int], p_probs: list[float],
+    q_ids: list[int], q_probs: list[float],
+) -> float:
+    import torch
+
+    q_map = dict(zip(q_ids, q_probs))
+    p_t = torch.tensor(p_probs, dtype=torch.float32)
+    q_t = torch.tensor([max(q_map.get(pid, 0.0), 1e-10) for pid in p_ids], dtype=torch.float32)
+    mask = p_t > 0
+    if not mask.any():
+        return 0.0
+    return float((p_t[mask] * (p_t[mask].log() - q_t[mask])).sum())
+
+
 def softmax_top_k(logits: list[float], k: int) -> tuple[list[int], list[float]]:
     if not logits:
         return [], []
-    indexed = sorted(enumerate(logits), key=lambda x: -x[1])[:k]
-    top_ids = [i for i, _ in indexed]
-    top_vals = [v for _, v in indexed]
-    max_val = max(top_vals)
-    exps = [math.exp(v - max_val) for v in top_vals]
-    total = sum(exps)
-    probs = [e / total for e in exps]
-    return top_ids, probs
+    import torch
+
+    t = torch.tensor(logits, dtype=torch.float32)
+    k = min(k, len(logits))
+    topk_vals, topk_ids = torch.topk(t, k)
+    probs = torch.softmax(topk_vals, dim=0)
+    return topk_ids.tolist(), probs.tolist()
+
+
+def softmax_top_k_torch(logits_t: "torch.Tensor", k: int) -> tuple[list[int], list[float]]:
+    if logits_t.numel() == 0:
+        return [], []
+    k = min(k, logits_t.numel())
+    topk_vals, topk_ids = torch.topk(logits_t.float(), k)
+    probs = torch.softmax(topk_vals, dim=0)
+    return topk_ids.tolist(), probs.tolist()
 
 
 class Fuser:

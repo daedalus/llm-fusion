@@ -233,7 +233,7 @@ def run_benchmark(
     from tokenizers import Tokenizer
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k
+    from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k, softmax_top_k_torch
     from llm_fusion.generate import format_hrm_prompt
     from llm_fusion.loader import patch_ouro_model
     from llm_fusion.metrics import fusion_gain as _calc_gain
@@ -326,7 +326,7 @@ def run_benchmark(
                         input_ids=torch.tensor([ouro_ids], device=device),
                         **ouro_kwargs,
                     )
-                ouro_logits = ouro_out.logits[0, -1, :].tolist()
+                ouro_logits_t = ouro_out.logits[0, -1, :]
                 if step == 0:
                     ouro_cache = ouro_out.past_key_values
 
@@ -344,26 +344,45 @@ def run_benchmark(
                         token_type_ids=hrm_tti,
                         **hrm_kwargs,
                     )
-                hrm_logits = hrm_out.logits[0, -1, :].tolist()
+                hrm_logits_t = hrm_out.logits[0, -1, :]
                 if step == 0:
                     hrm_cache = hrm_out.past_key_values
 
             if model == "fused":
-                ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, top_k)
-                hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, top_k)
+                ouro_topk_vals, ouro_topk_ids_t = torch.topk(ouro_logits_t, top_k)
+                hrm_topk_vals, hrm_topk_ids_t = torch.topk(hrm_logits_t, top_k)
+                ouro_probs_t = torch.softmax(ouro_topk_vals, dim=0)
+                hrm_probs_t = torch.softmax(hrm_topk_vals, dim=0)
+                ouro_top_ids = ouro_topk_ids_t.tolist()
+                ouro_probs = ouro_probs_t.tolist()
+                hrm_top_ids = hrm_topk_ids_t.tolist()
+                hrm_probs = hrm_probs_t.tolist()
                 ouro_dist = dict(zip(ouro_top_ids, ouro_probs))
                 hrm_dist = dict(zip(hrm_top_ids, hrm_probs))
-                total_kl_oh += compute_kl(ouro_dist, hrm_dist)
-                total_kl_ho += compute_kl(hrm_dist, ouro_dist)
+
+                q_map_oh = {i: max(ouro_dist.get(h, 0.0), 1e-10) for h, _ in zip(hrm_top_ids, hrm_probs) for i in [h]}
+                total_kl_oh += sum(
+                    hp * math.log(hp / q_map_oh.get(hid, 1e-10))
+                    for hid, hp in zip(hrm_top_ids, hrm_probs) if hp > 0
+                )
+                q_map_ho = {i: max(hrm_dist.get(o, 0.0), 1e-10) for o, _ in zip(ouro_top_ids, ouro_probs) for i in [o]}
+                total_kl_ho += sum(
+                    op * math.log(op / q_map_ho.get(oid, 1e-10))
+                    for oid, op in zip(ouro_top_ids, ouro_probs) if op > 0
+                )
+
                 all_ids = set(ouro_dist) | set(hrm_dist)
                 m_dist = {tid: 0.5 * (ouro_dist.get(tid, 0.0) + hrm_dist.get(tid, 0.0)) for tid in all_ids}
                 total_jsd += 0.5 * compute_kl(ouro_dist, m_dist) + 0.5 * compute_kl(hrm_dist, m_dist)
                 total_entropy += -sum(p * math.log(max(p, 1e-10)) for p in m_dist.values())
                 n_kl_steps += 1
+
                 fuser.current_step = step
-                hrm_tid, ouro_tid, token_str, prob = fuser.sample_token_pair(ouro_logits, hrm_logits, temperature)
-                ouro_p = parent_prob_for_token(ouro_logits, hrm_tid, top_k)
-                hrm_p = parent_prob_for_token(hrm_logits, hrm_tid, top_k)
+                hrm_tid, ouro_tid, token_str, prob = fuser.sample_token_pair(ouro_logits_t.tolist(), hrm_logits_t.tolist(), temperature)
+
+                ouro_p = parent_prob_for_token(ouro_logits_t.tolist(), hrm_tid, top_k)
+                hrm_p = hrm_dist.get(hrm_tid, 0.0)
+
                 gain = _calc_gain(prob, ouro_p, hrm_p)
                 total_gain += gain
                 if prob > max(ouro_p, hrm_p):
@@ -376,13 +395,13 @@ def run_benchmark(
             elif model == "ouro":
                 from llm_fusion.generate import sample_from_logits
 
-                tid, token_str, prob = sample_from_logits(ouro_logits, ouro_tok, top_k, temperature)
+                tid, token_str, prob = sample_from_logits(ouro_logits_t.tolist(), ouro_tok, top_k, temperature)
                 ouro_ids = [tid]
                 ouro_gen_ids.add(tid)
             elif model == "hrm":
                 from llm_fusion.generate import sample_from_logits
 
-                tid, token_str, prob = sample_from_logits(hrm_logits, hrm_tok, top_k, temperature)
+                tid, token_str, prob = sample_from_logits(hrm_logits_t.tolist(), hrm_tok, top_k, temperature)
                 hrm_ids_list = [tid]
                 hrm_gen_ids.add(tid)
 
