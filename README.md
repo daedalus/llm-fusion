@@ -45,10 +45,15 @@ The fusion always operates in HRM's vocabulary space.
 Five fusion strategies are implemented in clean, well-separated private methods on `Fuser`:
 
 - **average** — weighted softmax blend (`ouro_weight=0.5`)
-- **dynamic** — Ouro weight decays linearly from initial to final over the generation steps **(default, best win rate)**
+- **dynamic** — Ouro weight decays linearly from initial to final over the generation steps **(default, best gain)**
+- **slerp** — Spherical linear interpolation between probability distributions on the unit hypersphere **(best win rate at 80%)**
 - **product** — Product of Experts (multiplies probabilities, strongly penalizes tokens either model dislikes)
-- **min-entropy** — routes each token to whichever model is more confident
+- **min-entropy** — routes each token to whichever model is more confident (lower entropy)
+- **min-perplexity** — routes entirely to the winning model's own tokens (lowest JSD/KL divergence)
 - **cascade** — uses Ouro unless its top-1 probability falls below a threshold, then defers to HRM
+- **adaptive** — entropy-weighted average, shifts weight toward the more confident model
+- **confidence** — top-1 probability weighted average
+- **hybrid** — blends dynamic decay with confidence weighting
 
 ## Install
 
@@ -84,11 +89,17 @@ python -m llm_fusion --strategy product --local "The meaning of life is"
 # Min-Entropy Routing — use the more confident model per token
 python -m llm_fusion --strategy min-entropy --local "The capital of Japan is"
 
+# Min-Perplexity Routing — route entirely to the lower-entropy model
+python -m llm_fusion --strategy min-perplexity --local "The capital of Japan is"
+
 # Cascade — try Ouro first, fall back to HRM if Ouro's top prob < threshold
 python -m llm_fusion --strategy cascade --cascade-threshold 0.5 --local "Explain quantum computing"
 
 # Dynamic (default) — Ouro weight linearly decays over generation steps
 python -m llm_fusion --strategy dynamic --dynamic-initial-weight 0.8 --dynamic-final-weight 0.2 --local "Once upon a time"
+
+# SLERP — spherical linear interpolation (best win rate)
+python -m llm_fusion --strategy slerp --local "The meaning of life is"
 ```
 
 ### KL Divergence
@@ -160,33 +171,37 @@ Benchmark output includes speed + quality metrics per config:
 
 ### Benchmark Results
 
-Benchmark on the default prompt ("The quick brown fox jumps over the lazy dog"), 25 tokens, CPU:
+Benchmark on the default prompt ("The quick brown fox jumps over the lazy dog"), 10 tokens, CPU:
 
 | Config | Decode | Gen | FusedPPL | KL(o>h) | JSD | WinRate | Gain | Oracle | Entropy |
 |--------|--------|-----|----------|---------|-----|---------|------|--------|---------|
-| ouro/average | 1.3 | 1.6 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
-| hrm/average | 1.5 | 2.1 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
-| fused/average | 0.5 | 0.7 | 85.8 | 21.981 | 0.693 | 36.0% | +0.035 | 4.0% | 1.6 |
-| fused/product | 0.6 | 0.8 | 85.8 | 21.388 | 0.693 | 0.0% | +0.000 | 100.0% | 3.1 |
-| fused/min-entropy | 0.6 | 0.7 | 85.8 | 21.981 | 0.693 | 36.0% | +0.380 | 4.0% | 1.6 |
-| fused/cascade | 0.6 | 0.8 | 85.8 | 21.877 | 0.692 | 28.0% | +0.967 | 0.0% | 1.6 |
-| **fused/dynamic** | **0.6** | **0.8** | **85.8** | **22.274** | **0.693** | **76.0%** | **+1.624** | **12.0%** | **1.7** |
-| fused/adaptive | 0.6 | 0.7 | 85.8 | 21.981 | 0.693 | 36.0% | +0.296 | 4.0% | 1.6 |
-| fused/confidence | 0.6 | 0.7 | 85.8 | 21.981 | 0.693 | 36.0% | +0.035 | 4.0% | 1.6 |
-| fused/hybrid | 0.6 | 0.7 | 85.8 | 22.274 | 0.693 | 76.0% | +1.588 | 12.0% | 1.7 |
+| ouro/average | 1.6 | 1.9 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
+| hrm/average | 2.0 | 2.2 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
+| fused/average | 0.9 | 1.0 | 85.8 | 22.407 | 0.693 | 34.0% | -0.069 | 4.0% | 0.6 |
+| fused/product | 0.9 | 1.0 | 85.8 | 21.251 | 0.692 | 0.0% | -0.153 | 52.0% | 1.2 |
+| fused/min-entropy | 0.9 | 1.0 | 85.8 | 22.255 | 0.693 | 50.0% | +0.115 | 2.0% | 0.7 |
+| fused/min-perplexity | 0.9 | 1.0 | 85.8 | 18.990 | 0.648 | 44.0% | +0.000 | 20.0% | 1.0 |
+| fused/cascade | 0.8 | 0.9 | 85.8 | 21.762 | 0.693 | 58.0% | +0.268 | 2.0% | 0.8 |
+| **fused/dynamic** | **0.9** | **1.0** | **85.8** | **20.635** | **0.686** | **68.0%** | **+0.640** | **18.0%** | **1.3** |
+| fused/adaptive | 0.9 | 1.0 | 85.8 | 22.407 | 0.693 | 36.0% | +0.016 | 4.0% | 0.6 |
+| fused/confidence | 0.9 | 1.0 | 85.8 | 22.407 | 0.693 | 34.0% | -0.069 | 4.0% | 0.6 |
+| fused/hybrid | 0.9 | 1.1 | 85.8 | 22.263 | 0.693 | 44.0% | +0.400 | 4.0% | 0.7 |
+| **fused/slerp** | **1.0** | **1.1** | **85.8** | **20.954** | **0.691** | **80.0%** | **+0.115** | **6.0%** | **0.7** |
 
-**Dynamic is the best strategy** — 76% win rate, +1.624 fusion gain.
+**SLERP has the best win rate (80%)** — fusion beats one or both parents on 4 out of 5 tokens. **Dynamic has the best gain (+0.640)** — when fusion wins, it wins big.
 
 | Strategy | WinRate | Gain | Oracle | Interpretation |
 |----------|---------|------|--------|----------------|
-| **dynamic** | **76.0%** | **+1.624** | **12.0%** | **Best** — fusion helps 3/4 of the time |
-| hybrid | 76.0% | +1.588 | 12.0% | Tied with dynamic, slightly lower gain |
-| cascade | 28.0% | +0.967 | 0.0% | High gain when it fuses, but rarely does |
-| min-entropy | 36.0% | +0.380 | 4.0% | Moderate — routes to confident model |
-| adaptive | 36.0% | +0.296 | 4.0% | Entropy-weighted, noisier than dynamic |
-| average | 36.0% | +0.035 | 4.0% | Baseline — fusion barely helps |
-| confidence | 36.0% | +0.035 | 4.0% | Same as average — top-1 prob is weak signal |
-| product | 0.0% | +0.000 | 100.0% | **Worst** — kills all tokens, 0% win rate |
+| **slerp** | **80.0%** | +0.115 | 6.0% | **Highest win rate** — spherical interpolation preserves distribution structure |
+| **dynamic** | **68.0%** | **+0.640** | **18.0%** | **Best gain** — linear weight decay, fusion helps most when it wins |
+| cascade | 58.0% | +0.268 | 2.0% | Strong win rate, defers to HRM when Ouro is uncertain |
+| min-entropy | 50.0% | +0.115 | 2.0% | Routes to confident model, moderate gain |
+| min-perplexity | 44.0% | +0.000 | 20.0% | Lowest JSD/KL — stays closest to parent distributions |
+| hybrid | 44.0% | +0.400 | 4.0% | Blends dynamic + confidence, balanced |
+| adaptive | 36.0% | +0.016 | 4.0% | Entropy-weighted, noisier than dynamic |
+| average | 34.0% | -0.069 | 4.0% | Baseline — fusion barely helps |
+| confidence | 34.0% | -0.069 | 4.0% | Same as average — top-1 prob is weak signal |
+| product | 0.0% | -0.153 | 52.0% | **Worst** — kills all tokens, 0% win rate |
 
 ### Parameters
 
@@ -200,7 +215,7 @@ Benchmark on the default prompt ("The quick brown fox jumps over the lazy dog"),
 | `--ouro-weight` | `0.5` | Ouro weight (average strategy) |
 | `--rep-penalty` | `1.0` | Repetition penalty (`>1` discourages repeats) |
 | `--condition` | `direct` | HRM condition: `direct`, `cot`, `noisy`, `synth` |
-| `--strategy` | `dynamic` | Fusion: `average`, `product`, `min-entropy`, `cascade`, `dynamic` |
+| `--strategy` | `dynamic` | Fusion: `average`, `product`, `min-entropy`, `min-perplexity`, `cascade`, `dynamic`, `adaptive`, `confidence`, `hybrid`, `slerp` |
 | `--cascade-threshold` | `0.5` | Ouro top-prob threshold for cascade strategy |
 | `--dynamic-initial-weight` | `0.8` | Starting Ouro weight for dynamic strategy |
 | `--dynamic-final-weight` | `0.2` | Final Ouro weight for dynamic strategy |
@@ -215,10 +230,15 @@ Benchmark on the default prompt ("The quick brown fox jumps over the lazy dog"),
 | Strategy | Description |
 |----------|-------------|
 | `dynamic` | **(default)** Linear decay of Ouro weight from `initial` to `final` over generation steps |
+| `slerp` | Spherical linear interpolation on probability distributions — **best win rate (80%)** |
 | `average` | Weighted average of Ouro and HRM logit distributions |
 | `product` | Product of Experts — multiply probabilities, kills tokens either model dislikes |
 | `min-entropy` | Per-token routing to the more confident model (lower entropy) |
+| `min-perplexity` | Per-token routing to the winning model's own tokens (lowest JSD/KL) |
 | `cascade` | Try Ouro first; fall back to HRM if Ouro's top prob is below threshold |
+| `adaptive` | Entropy-weighted average, shifts weight toward the more confident model |
+| `confidence` | Top-1 probability weighted average |
+| `hybrid` | Blends dynamic decay with confidence weighting |
 
 ## Requirements
 
@@ -252,7 +272,7 @@ See `AGENTS.md` for details.
 │   ├── cli.py                 # CLI argument parsing
 │   ├── generate.py            # Generation loop, perplexity, evaluation
 │   ├── loader.py              # Model loading, CausalLM protocol
-│   ├── fusion.py              # Fuser class (5 strategies) + KL divergence
+│   ├── fusion.py              # Fuser class (10 strategies) + KL divergence
 │   ├── metrics.py             # Fusion quality metrics (gain, win rate, eval)
 │   ├── benchmark.py           # Speed benchmarks + robustness battery
 │   ├── token_matcher.py       # Bidirectional token ID matcher
@@ -302,9 +322,10 @@ lizard src/ --CCN=15
   howpublished = {GitHub},
   url          = {https://github.com/daedalus/LLM_EXPERIMENT},
   abstract     = {Weighted logit fusion over ByteDance Ouro-1.4B and Sapient HRM-Text-1B
-                  under transformers 5.11.0. Implements 5 fusion strategies (average,
-                  product, min-entropy, cascade, dynamic) via bidirectional token ID
-                  matching. Includes KL divergence, fusion gain, perplexity evaluation,
+                  under transformers 5.11.0. Implements 10 fusion strategies (average,
+                  product, min-entropy, min-perplexity, cascade, dynamic, adaptive,
+                  confidence, hybrid, slerp) via bidirectional token ID matching.
+                  Includes KL divergence, fusion gain, perplexity evaluation,
                   and a 26-prompt robustness benchmark across 8 categories.},
 }
 ```
