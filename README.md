@@ -46,7 +46,8 @@ Five fusion strategies are implemented in clean, well-separated private methods 
 
 - **average** — weighted softmax blend (`ouro_weight=0.5`)
 - **dynamic** — Ouro weight decays linearly from initial to final over the generation steps **(default, best gain)**
-- **slerp** — Spherical linear interpolation between probability distributions on the unit hypersphere **(best win rate at 80%)**
+- **simple** — pools top-k from both models, sums overlapping probabilities, sorts by score **(best win rate at 96%)**
+- **slerp** — Spherical linear interpolation between probability distributions on the unit hypersphere
 - **product** — Product of Experts (multiplies probabilities, strongly penalizes tokens either model dislikes)
 - **min-entropy** — routes each token to whichever model is more confident (lower entropy)
 - **min-perplexity** — routes entirely to the winning model's own tokens (lowest JSD/KL divergence)
@@ -100,6 +101,9 @@ python -m llm_fusion --strategy dynamic --dynamic-initial-weight 0.8 --dynamic-f
 
 # SLERP — spherical linear interpolation (best win rate)
 python -m llm_fusion --strategy slerp --local "The meaning of life is"
+
+# Simple — pool all tokens, sum probs, sort (96% win rate)
+python -m llm_fusion --strategy simple --local "The meaning of life is"
 ```
 
 ### KL Divergence
@@ -175,25 +179,27 @@ Benchmark on the default prompt ("The quick brown fox jumps over the lazy dog"),
 
 | Config | Decode | Gen | FusedPPL | KL(o>h) | JSD | WinRate | Gain | Oracle | Entropy |
 |--------|--------|-----|----------|---------|-----|---------|------|--------|---------|
-| ouro/average | 1.6 | 1.9 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
-| hrm/average | 2.0 | 2.2 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
+| ouro/average | 1.7 | 2.0 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
+| hrm/average | 2.1 | 2.5 | 0.0 | 0.000 | 0.000 | 0.0% | +0.000 | 0.0% | 0.0 |
 | fused/average | 0.9 | 1.0 | 85.8 | 22.407 | 0.693 | 34.0% | -0.069 | 4.0% | 0.6 |
-| fused/product | 0.9 | 1.0 | 85.8 | 21.251 | 0.692 | 0.0% | -0.153 | 52.0% | 1.2 |
-| fused/min-entropy | 0.9 | 1.0 | 85.8 | 22.255 | 0.693 | 50.0% | +0.115 | 2.0% | 0.7 |
-| fused/min-perplexity | 0.9 | 1.0 | 85.8 | 18.990 | 0.648 | 44.0% | +0.000 | 20.0% | 1.0 |
+| fused/product | 0.7 | 0.8 | 85.8 | 21.251 | 0.692 | 0.0% | -0.153 | 52.0% | 1.2 |
+| fused/min-entropy | 0.8 | 0.9 | 85.8 | 22.255 | 0.693 | 50.0% | +0.115 | 2.0% | 0.7 |
+| fused/min-perplexity | 0.8 | 0.9 | 85.8 | 18.990 | 0.648 | 44.0% | +0.000 | 20.0% | 1.0 |
 | fused/cascade | 0.8 | 0.9 | 85.8 | 21.762 | 0.693 | 58.0% | +0.268 | 2.0% | 0.8 |
-| **fused/dynamic** | **0.9** | **1.0** | **85.8** | **20.635** | **0.686** | **68.0%** | **+0.640** | **18.0%** | **1.3** |
-| fused/adaptive | 0.9 | 1.0 | 85.8 | 22.407 | 0.693 | 36.0% | +0.016 | 4.0% | 0.6 |
-| fused/confidence | 0.9 | 1.0 | 85.8 | 22.407 | 0.693 | 34.0% | -0.069 | 4.0% | 0.6 |
-| fused/hybrid | 0.9 | 1.1 | 85.8 | 22.263 | 0.693 | 44.0% | +0.400 | 4.0% | 0.7 |
-| **fused/slerp** | **1.0** | **1.1** | **85.8** | **20.954** | **0.691** | **80.0%** | **+0.115** | **6.0%** | **0.7** |
+| **fused/dynamic** | **0.6** | **0.7** | **85.8** | **20.635** | **0.686** | **68.0%** | **+0.640** | **18.0%** | **1.3** |
+| fused/adaptive | 0.8 | 0.9 | 85.8 | 22.407 | 0.693 | 36.0% | +0.016 | 4.0% | 0.6 |
+| fused/confidence | 0.7 | 0.8 | 85.8 | 22.407 | 0.693 | 34.0% | -0.069 | 4.0% | 0.6 |
+| fused/hybrid | 0.7 | 0.7 | 85.8 | 22.263 | 0.693 | 44.0% | +0.400 | 4.0% | 0.7 |
+| fused/slerp | 0.7 | 0.8 | 85.8 | 20.954 | 0.691 | 80.0% | +0.115 | 6.0% | 0.7 |
+| **fused/simple** | **0.8** | **0.9** | **85.8** | **22.407** | **0.693** | **96.0%** | **+0.596** | **4.0%** | **0.6** |
 
-**SLERP has the best win rate (80%)** — fusion beats one or both parents on 4 out of 5 tokens. **Dynamic has the best gain (+0.640)** — when fusion wins, it wins big.
+**Simple has the best win rate (96%)** — fusion beats one or both parents on 24 out of 25 tokens. **Dynamic has the best gain (+0.640)** — when fusion wins, it wins big.
 
 | Strategy | WinRate | Gain | Oracle | Interpretation |
 |----------|---------|------|--------|----------------|
-| **slerp** | **80.0%** | +0.115 | 6.0% | **Highest win rate** — spherical interpolation preserves distribution structure |
-| **dynamic** | **68.0%** | **+0.640** | **18.0%** | **Best gain** — linear weight decay, fusion helps most when it wins |
+| **simple** | **96.0%** | +0.596 | 4.0% | **Highest win rate** — pool all tokens, sum probs, sort |
+| slerp | 80.0% | +0.115 | 6.0% | Spherical interpolation preserves distribution structure |
+| dynamic | 68.0% | +0.640 | 18.0% | **Best gain** — linear weight decay, fusion helps most when it wins |
 | cascade | 58.0% | +0.268 | 2.0% | Strong win rate, defers to HRM when Ouro is uncertain |
 | min-entropy | 50.0% | +0.115 | 2.0% | Routes to confident model, moderate gain |
 | min-perplexity | 44.0% | +0.000 | 20.0% | Lowest JSD/KL — stays closest to parent distributions |
@@ -215,7 +221,7 @@ Benchmark on the default prompt ("The quick brown fox jumps over the lazy dog"),
 | `--ouro-weight` | `0.5` | Ouro weight (average strategy) |
 | `--rep-penalty` | `1.0` | Repetition penalty (`>1` discourages repeats) |
 | `--condition` | `direct` | HRM condition: `direct`, `cot`, `noisy`, `synth` |
-| `--strategy` | `dynamic` | Fusion: `average`, `product`, `min-entropy`, `min-perplexity`, `cascade`, `dynamic`, `adaptive`, `confidence`, `hybrid`, `slerp` |
+| `--strategy` | `dynamic` | Fusion: `average`, `product`, `min-entropy`, `min-perplexity`, `cascade`, `dynamic`, `adaptive`, `confidence`, `hybrid`, `slerp`, `simple` |
 | `--cascade-threshold` | `0.5` | Ouro top-prob threshold for cascade strategy |
 | `--dynamic-initial-weight` | `0.8` | Starting Ouro weight for dynamic strategy |
 | `--dynamic-final-weight` | `0.2` | Final Ouro weight for dynamic strategy |
@@ -230,7 +236,8 @@ Benchmark on the default prompt ("The quick brown fox jumps over the lazy dog"),
 | Strategy | Description |
 |----------|-------------|
 | `dynamic` | **(default)** Linear decay of Ouro weight from `initial` to `final` over generation steps |
-| `slerp` | Spherical linear interpolation on probability distributions — **best win rate (80%)** |
+| `simple` | Pool all top-k tokens from both models, sum overlapping probs, sort — **best win rate (96%)** |
+| `slerp` | Spherical linear interpolation on probability distributions |
 | `average` | Weighted average of Ouro and HRM logit distributions |
 | `product` | Product of Experts — multiply probabilities, kills tokens either model dislikes |
 | `min-entropy` | Per-token routing to the more confident model (lower entropy) |
@@ -272,7 +279,7 @@ See `AGENTS.md` for details.
 │   ├── cli.py                 # CLI argument parsing
 │   ├── generate.py            # Generation loop, perplexity, evaluation
 │   ├── loader.py              # Model loading, CausalLM protocol
-│   ├── fusion.py              # Fuser class (10 strategies) + KL divergence
+│   ├── fusion.py              # Fuser class (11 strategies) + KL divergence
 │   ├── metrics.py             # Fusion quality metrics (gain, win rate, eval)
 │   ├── benchmark.py           # Speed benchmarks + robustness battery
 │   ├── token_matcher.py       # Bidirectional token ID matcher
@@ -322,10 +329,10 @@ lizard src/ --CCN=15
   howpublished = {GitHub},
   url          = {https://github.com/daedalus/LLM_EXPERIMENT},
   abstract     = {Weighted logit fusion over ByteDance Ouro-1.4B and Sapient HRM-Text-1B
-                  under transformers 5.11.0. Implements 10 fusion strategies (average,
+                  under transformers 5.11.0. Implements 11 fusion strategies (average,
                   product, min-entropy, min-perplexity, cascade, dynamic, adaptive,
-                  confidence, hybrid, slerp) via bidirectional token ID matching.
-                  Includes KL divergence, fusion gain, perplexity evaluation,
+                  confidence, hybrid, slerp, simple) via bidirectional token ID
+                  matching. Includes KL divergence, fusion gain, perplexity evaluation,
                   and a 26-prompt robustness benchmark across 8 categories.},
 }
 ```
