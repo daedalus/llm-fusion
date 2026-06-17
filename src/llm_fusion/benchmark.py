@@ -81,6 +81,8 @@ ROBUSTNESS_BATTERY: list[dict[str, str]] = [
         "category": "factual",
         "subdomain": "astronomy",
     },
+    {"prompt": "DNA stands for", "category": "factual", "subdomain": "biology"},
+    {"prompt": "The painter of the Mona Lisa is", "category": "factual", "subdomain": "art"},
     # Reasoning / common sense
     {
         "prompt": "If all humans are mortal and Socrates is human, then",
@@ -88,63 +90,52 @@ ROBUSTNESS_BATTERY: list[dict[str, str]] = [
         "subdomain": "logic",
     },
     {"prompt": "A ball thrown in the air will", "category": "reasoning", "subdomain": "physics"},
-    {
-        "prompt": "If it rains, the ground gets wet. The ground is wet, therefore",
-        "category": "reasoning",
-        "subdomain": "logic",
-    },
-    {
-        "prompt": "A triangle has three sides. A square has",
-        "category": "reasoning",
-        "subdomain": "geometry",
-    },
+    {"prompt": "A car needs fuel to", "category": "reasoning", "subdomain": "common_sense"},
+    {"prompt": "The opposite of hot is", "category": "reasoning", "subdomain": "language"},
     # Math / arithmetic
     {"prompt": "2 + 2 =", "category": "math", "subdomain": "arithmetic"},
     {"prompt": "The square root of 144 is", "category": "math", "subdomain": "algebra"},
     {"prompt": "10 factorial is", "category": "math", "subdomain": "combinatorics"},
-    {
-        "prompt": "If x = 5 and y = 3, then x * y + 2 =",
-        "category": "math",
-        "subdomain": "arithmetic",
-    },
+    {"prompt": "The derivative of x squared is", "category": "math", "subdomain": "calculus"},
     # Code
     {"prompt": "def hello_world():\n    print(", "category": "code", "subdomain": "python"},
-    {"prompt": "for i in range(10):\n    print(", "category": "code", "subdomain": "python"},
+    {"prompt": "SELECT * FROM users WHERE", "category": "code", "subdomain": "sql"},
+    {"prompt": "#include <stdio.h>\nint main() {", "category": "code", "subdomain": "c"},
     # Creative / storytelling
     {"prompt": "Once upon a time", "category": "creative", "subdomain": "story"},
-    {"prompt": "In a galaxy far far away", "category": "creative", "subdomain": "story"},
-    {
-        "prompt": "The old man walked to the edge of the cliff and",
-        "category": "creative",
-        "subdomain": "narrative",
-    },
+    {"prompt": "She opened the door and saw", "category": "creative", "subdomain": "narrative"},
+    {"prompt": "In the year 2050, humans will", "category": "creative", "subdomain": "sci_fi"},
     # Instruction following
-    {
-        "prompt": "List three things you need to",
-        "category": "instruction",
-        "subdomain": "procedural",
-    },
     {
         "prompt": "Explain the process of photosynthesis in",
         "category": "instruction",
         "subdomain": "explanation",
     },
+    {"prompt": "To make a cup of coffee, you need to", "category": "instruction", "subdomain": "procedural"},
+    {"prompt": "The key differences between Python and Java are", "category": "instruction", "subdomain": "technical"},
     # Multilingual
     {"prompt": "Hola, ¿cómo estás?", "category": "multilingual", "subdomain": "spanish"},
     {"prompt": "Bonjour, comment allez-vous?", "category": "multilingual", "subdomain": "french"},
-    # Domain specific
-    {
-        "prompt": "In quantum mechanics, the uncertainty principle states that",
-        "category": "domain",
-        "subdomain": "physics",
-    },
-    {
-        "prompt": "The law of supply and demand states that",
-        "category": "domain",
-        "subdomain": "economics",
-    },
-    {"prompt": "The capital of Brazil is", "category": "factual", "subdomain": "geography"},
-    {"prompt": "Python is a", "category": "domain", "subdomain": "programming"},
+    # Historical
+    {"prompt": "World War II ended in", "category": "historical", "subdomain": "events"},
+    {"prompt": "The first president of the United States was", "category": "historical", "subdomain": "politics"},
+    # Medical / health
+    {"prompt": "The human heart has", "category": "medical", "subdomain": "anatomy"},
+    {"prompt": "Vaccines work by", "category": "medical", "subdomain": "immunology"},
+    # Technical / scientific
+    {"prompt": "TCP/IP is a", "category": "technical", "subdomain": "networking"},
+    {"prompt": "Machine learning is a subset of", "category": "technical", "subdomain": "ai"},
+    {"prompt": "The periodic table contains", "category": "technical", "subdomain": "chemistry"},
+    # Conversational / social
+    {"prompt": "How are you today?", "category": "conversational", "subdomain": "greeting"},
+    {"prompt": "The best way to learn programming is to", "category": "conversational", "subdomain": "advice"},
+    # Legal / formal
+    {"prompt": "The First Amendment protects", "category": "legal", "subdomain": "constitutional"},
+    {"prompt": "A contract requires", "category": "legal", "subdomain": "civil_law"},
+    # Edge cases / adversarial
+    {"prompt": "", "category": "edge", "subdomain": "empty"},
+    {"prompt": "a", "category": "edge", "subdomain": "minimal"},
+    {"prompt": "???", "category": "edge", "subdomain": "punctuation"},
 ]
 
 
@@ -843,6 +834,11 @@ def main() -> None:
         action="store_true",
         help="Run diverse robustness battery instead of speed benchmark",
     )
+    parser.add_argument(
+        "--single",
+        action="store_true",
+        help="Run on single prompt only (default: run all prompts and average)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--debug", action="store_true", help="Debug output")
     parser.add_argument(
@@ -893,7 +889,7 @@ def main() -> None:
         )
         tag = "robustness"
         print("\n" + format_robustness_table(results))
-    else:
+    elif args.single:
         results = run_benchmark(
             text=args.prompt,
             max_new_tokens=args.max_new_tokens,
@@ -903,6 +899,52 @@ def main() -> None:
         )
         tag = "speed"
         print("\n" + format_table(results))
+    else:
+        prompts = [b["prompt"] for b in ROBUSTNESS_BATTERY]
+        print(f"Running benchmark on {len(prompts)} prompts...", file=sys.stderr)
+        all_results: dict[str, list[BenchmarkResult]] = {}
+        for i, prompt in enumerate(prompts):
+            print(f"  [{i+1}/{len(prompts)}] {prompt[:40]}...", file=sys.stderr)
+            bench_results = run_benchmark(
+                text=prompt,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temp,
+                cache=args.benchmark_cache,
+                device=args.device,
+            )
+            for r in bench_results:
+                key = f"{r.model}/{r.strategy}"
+                if key not in all_results:
+                    all_results[key] = []
+                all_results[key].append(r)
+
+        averaged: list[BenchmarkResult] = []
+        for key in sorted(all_results):
+            rs = all_results[key]
+            n = len(rs)
+            averaged.append(BenchmarkResult(
+                model=rs[0].model,
+                strategy=rs[0].strategy,
+                tokens_generated=round(sum(r.tokens_generated for r in rs) / n),
+                decoding_tps=sum(r.decoding_tps for r in rs) / n,
+                generation_tps=sum(r.generation_tps for r in rs) / n,
+                ttft_s=sum(r.ttft_s for r in rs) / n,
+                memory_mb=max(r.memory_mb for r in rs),
+                fused_ppl=sum(r.fused_ppl for r in rs) / n,
+                avg_kl_oh=sum(r.avg_kl_oh for r in rs) / n,
+                avg_jsd=sum(r.avg_jsd for r in rs) / n,
+                fusion_win_rate=sum(r.fusion_win_rate for r in rs) / n,
+                avg_fusion_gain=sum(r.avg_fusion_gain for r in rs) / n,
+                oracle_rate=sum(r.oracle_rate for r in rs) / n,
+                fused_entropy=sum(r.fused_entropy for r in rs) / n,
+                ouro_tokens_used=sum(r.ouro_tokens_used for r in rs) / n,
+                hrm_tokens_used=sum(r.hrm_tokens_used for r in rs) / n,
+            ))
+
+        tag = "speed_full"
+        print(f"\nAveraged across {len(prompts)} prompts:\n")
+        print(format_table(averaged))
+        results = averaged
 
     if args.save:
         save_results(results, tag=tag)
