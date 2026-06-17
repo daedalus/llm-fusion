@@ -446,6 +446,33 @@ class TestSlerp:
         assert len(results) > 0
 
 
+class TestSimple:
+    def test_merges_both_models(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="simple")
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[100] = 5.0
+        hrm_logits[371] = 5.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        tids = {tid for tid, _, _ in results}
+        assert 114 in tids  # ouro 100 -> hrm 114
+        assert 371 in tids  # hrm 371 direct
+
+    def test_sums_overlapping_tokens(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="simple", threshold=0.0)
+        ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 5.0
+        hrm_logits[371] = 5.0
+        results = fuser.fuse_logits(ouro_logits, hrm_logits)
+        assert len(results) > 0
+
+    def test_empty_logits(self, matcher) -> None:
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="simple")
+        results = fuser.fuse_logits([], [])
+        assert results == []
+
+
 class TestSampleTokenPair:
     def test_sample_token_pair_returns_both_ids(self, matcher) -> None:
         fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="average")
