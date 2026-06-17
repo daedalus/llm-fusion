@@ -79,6 +79,7 @@ def load_models(
             path,
             torch_dtype=dtype,
             device_map=device,
+            attn_implementation="sdpa",
         )
         log.info("HRM model loaded")
 

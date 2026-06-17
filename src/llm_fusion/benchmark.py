@@ -275,6 +275,7 @@ def run_benchmark(
             hrm_model_path,
             torch_dtype=dtype,
             device_map=device,
+            attn_implementation="sdpa",
         )
 
     results: list[BenchmarkResult] = []
@@ -572,6 +573,7 @@ def run_robustness_benchmark(
         hrm_model_path,
         torch_dtype=dtype,
         device_map=device,
+        attn_implementation="sdpa",
     )
 
     fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, "average")
