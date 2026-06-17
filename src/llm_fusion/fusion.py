@@ -85,12 +85,13 @@ class Fuser:
         self.hrm_weight = 1.0 - ouro_weight
         self.top_k = top_k
         self.threshold = threshold
-        valid = ("average", "product", "min-entropy", "cascade", "dynamic", "adaptive", "confidence", "hybrid")
+        valid = ("average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid")
         if strategy not in valid:
             raise ValueError(f"Unknown strategy: {strategy!r}")
         self.strategy = strategy
         self.cascade_threshold = cascade_threshold
         self.current_step = 0
+        self.last_routed_model: str | None = None
         self.dynamic_initial_weight = dynamic_initial_weight
         self.dynamic_final_weight = dynamic_final_weight
         self.dynamic_total_steps = dynamic_total_steps
@@ -187,6 +188,25 @@ class Fuser:
         filtered = [(tid, p) for tid, p in fused.items() if p >= self.threshold]
         filtered.sort(key=lambda x: -x[1])
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+
+    def _fuse_logits_minperplexity(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        ouro_entropy = self._distribution_entropy(ouro_logits, self.top_k)
+        hrm_entropy = self._distribution_entropy(hrm_logits, self.top_k)
+
+        if hrm_entropy < ouro_entropy:
+            self.last_routed_model = "hrm"
+            ids, probs = softmax_top_k(hrm_logits, self.top_k)
+            filtered = [(tid, p) for tid, p in zip(ids, probs) if p >= self.threshold]
+            return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+
+        self.last_routed_model = "ouro"
+        ids, probs = softmax_top_k(ouro_logits, self.top_k)
+        filtered = [(tid, p) for tid, p in zip(ids, probs) if p >= self.threshold]
+        return [(tid, p, self.ouro_tok.decode([tid])) for tid, p in filtered]
 
     def _fuse_logits_cascade(
         self,
@@ -290,6 +310,8 @@ class Fuser:
             return self._fuse_logits_product(ouro_logits, hrm_logits)
         if self.strategy == "min-entropy":
             return self._fuse_logits_minentropy(ouro_logits, hrm_logits)
+        if self.strategy == "min-perplexity":
+            return self._fuse_logits_minperplexity(ouro_logits, hrm_logits)
         if self.strategy == "cascade":
             return self._fuse_logits_cascade(ouro_logits, hrm_logits)
         if self.strategy == "dynamic":

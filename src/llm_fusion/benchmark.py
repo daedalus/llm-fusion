@@ -211,6 +211,7 @@ def run_benchmark(
             {"model": "fused", "strategy": "average"},
             {"model": "fused", "strategy": "product"},
             {"model": "fused", "strategy": "min-entropy"},
+            {"model": "fused", "strategy": "min-perplexity"},
             {"model": "fused", "strategy": "cascade"},
             {"model": "fused", "strategy": "dynamic"},
             {"model": "fused", "strategy": "adaptive"},
@@ -747,7 +748,7 @@ def run_graph_benchmark(
     import matplotlib.pyplot as plt
 
     token_counts = [10, 30, 50]
-    strategies = ["average", "product", "min-entropy", "cascade", "dynamic"]
+    strategies = ["average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic"]
     metrics = ["fusion_win_rate", "avg_fusion_gain", "avg_kl_oh", "avg_jsd", "fused_entropy"]
     metric_labels = {
         "fusion_win_rate": "Win Rate",

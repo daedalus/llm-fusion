@@ -424,11 +424,16 @@ def generate(
                     print(f" [gain=+{gain:.3f}]", end="", flush=True)
                 else:
                     print(f" [gain={gain:.3f}]", end="", flush=True)
-            hrm_ids_list = [tid]
-            ouro_ids = [tid]
-            hrm_gen_ids.add(tid)
-            ouro_gen_ids.add(tid)
-            eos_id = HRM_EOS_ID
+            if strategy == "min-perplexity" and fuser.last_routed_model == "ouro":
+                ouro_ids = [tid]
+                ouro_gen_ids.add(tid)
+                eos_id = OURO_EOS_ID
+            else:
+                hrm_ids_list = [tid]
+                ouro_ids = [tid]
+                hrm_gen_ids.add(tid)
+                ouro_gen_ids.add(tid)
+                eos_id = HRM_EOS_ID
         elif model == "ouro":
             tid, token_str, prob = sample_from_logits(ouro_logits, ouro_tok, top_k, temperature, rng)
             ouro_ids = [tid]
