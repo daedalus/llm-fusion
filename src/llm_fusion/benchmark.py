@@ -388,6 +388,7 @@ def run_benchmark(
     loaded: LoadedModels | None = None,
     show_completions: bool = False,
     bench_cache: BenchmarkCache | None = None,
+    seed: int | None = None,
 ) -> list[BenchmarkResult]:
     if configs is None:
         configs = [
@@ -410,7 +411,7 @@ def run_benchmark(
         ck = bench_cache.cache_key(
             text=text, max_new_tokens=max_new_tokens,
             temperature=temperature, repetition_penalty=repetition_penalty,
-            top_k=top_k, threshold=threshold,
+            seed=seed, top_k=top_k, threshold=threshold,
             ouro_weight=ouro_weight, configs=[str(c) for c in configs],
         )
         cached = bench_cache.get(ck)
@@ -472,10 +473,21 @@ def run_benchmark(
             )
 
     import torch
+    import random as _random
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k, softmax_top_k_torch
     from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID, apply_repetition_penalty
     from llm_fusion.metrics import fusion_gain as _calc_gain
     from llm_fusion.metrics import parent_prob_for_token
+
+    if seed is not None:
+        _random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    rng = _random.Random(seed)
 
     results: list[BenchmarkResult] = []
 
@@ -616,7 +628,7 @@ def run_benchmark(
                 fuser.current_step = step
                 ouro_logits_list = ouro_logits_t.tolist()
                 hrm_logits_list = hrm_logits_t.tolist()
-                hrm_tid, ouro_tid, token_str, prob = fuser.sample_token_pair(ouro_logits_list, hrm_logits_list, temperature)
+                hrm_tid, ouro_tid, token_str, prob = fuser.sample_token_pair(ouro_logits_list, hrm_logits_list, temperature, rng=rng)
 
                 ouro_p = parent_prob_for_token(ouro_logits_list, hrm_tid, top_k)
                 hrm_p = hrm_dist.get(hrm_tid, 0.0)
@@ -645,13 +657,13 @@ def run_benchmark(
             elif model == "ouro":
                 from llm_fusion.generate import sample_from_logits
 
-                tid, token_str, prob = sample_from_logits(ouro_logits_t.tolist(), ouro_tok, top_k, temperature)
+                tid, token_str, prob = sample_from_logits(ouro_logits_t.tolist(), ouro_tok, top_k, temperature, rng=rng)
                 ouro_ids = [tid]
                 ouro_gen_ids.add(tid)
             elif model == "hrm":
                 from llm_fusion.generate import sample_from_logits
 
-                tid, token_str, prob = sample_from_logits(hrm_logits_t.tolist(), hrm_tok, top_k, temperature)
+                tid, token_str, prob = sample_from_logits(hrm_logits_t.tolist(), hrm_tok, top_k, temperature, rng=rng)
                 hrm_ids_list = [tid]
                 hrm_gen_ids.add(tid)
 
@@ -1065,6 +1077,8 @@ def main() -> None:
     parser.add_argument("--temp", type=float, default=0.0)
     parser.add_argument("--rep-penalty", type=float, default=1.0, dest="repetition_penalty",
                         help="Repetition penalty (>1.0 discourages repeats)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for deterministic generation (default: 42)")
     parser.add_argument(
         "--robustness",
         action="store_true",
@@ -1143,6 +1157,7 @@ def main() -> None:
                 loaded=loaded,
                 show_completions=args.show_completions,
                 bench_cache=bench_cache,
+                seed=args.seed,
             )
             tag = "speed"
             print("\n" + format_table(results, show_completions=args.show_completions))
@@ -1161,6 +1176,7 @@ def main() -> None:
                     loaded=loaded,
                     show_completions=args.show_completions,
                     bench_cache=bench_cache,
+                    seed=args.seed,
                 )
                 for r in bench_results:
                     key = f"{r.model}/{r.strategy}"
