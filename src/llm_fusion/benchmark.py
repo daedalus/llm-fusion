@@ -721,6 +721,27 @@ def run_benchmark(
             completion_short = r.completion.replace("\n", "\\n") if r.completion else ""
             print(f"    prompt:     {prompt_short}", file=sys.stderr)
             print(f"    completion: {completion_short}", file=sys.stderr)
+            stats = []
+            if r.ouro_ppl > 0:
+                stats.append(f"ouro_ppl={r.ouro_ppl:.1f}")
+            if r.hrm_ppl > 0:
+                stats.append(f"hrm_ppl={r.hrm_ppl:.1f}")
+            if r.fused_ppl > 0:
+                stats.append(f"fused_ppl={r.fused_ppl:.1f}")
+            if r.avg_kl_oh > 0:
+                stats.append(f"kl={r.avg_kl_oh:.3f}")
+            if r.avg_jsd > 0:
+                stats.append(f"jsd={r.avg_jsd:.3f}")
+            if r.fusion_win_rate > 0:
+                stats.append(f"win={r.fusion_win_rate:.0%}")
+            if r.avg_fusion_gain != 0:
+                stats.append(f"gain={r.avg_fusion_gain:+.3f}")
+            if r.oracle_rate > 0:
+                stats.append(f"oracle={r.oracle_rate:.0%}")
+            if r.fused_entropy > 0:
+                stats.append(f"entropy={r.fused_entropy:.2f}")
+            if stats:
+                print(f"    stats:      {' | '.join(stats)}", file=sys.stderr)
 
     if bench_cache is not None:
         bench_cache.put(ck, results)
