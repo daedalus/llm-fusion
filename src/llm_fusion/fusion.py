@@ -117,7 +117,10 @@ class Fuser:
             match = self.matcher.ouro_to_hrm(oid)
             if not match.target_ids:
                 continue
-            share = prob / len(match.target_ids)
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
             for tid in match.target_ids:
                 fused[tid] = fused.get(tid, 0.0) + share * ow
 
@@ -138,7 +141,10 @@ class Fuser:
             match = self.matcher.ouro_to_hrm(oid)
             if not match.target_ids:
                 continue
-            share = prob / len(match.target_ids)
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
             for tid in match.target_ids:
                 ouro_given_hrm[tid] = ouro_given_hrm.get(tid, 0.0) + share
 
@@ -226,7 +232,10 @@ class Fuser:
             match = self.matcher.ouro_to_hrm(oid)
             if not match.target_ids:
                 continue
-            share = prob / len(match.target_ids)
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
             for tid in match.target_ids:
                 ouro_aligned[tid] = ouro_aligned.get(tid, 0.0) + share
 
@@ -290,7 +299,10 @@ class Fuser:
             match = self.matcher.ouro_to_hrm(oid)
             if not match.target_ids:
                 continue
-            share = prob / len(match.target_ids)
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
             for tid in match.target_ids:
                 ouro_given_hrm[tid] = ouro_given_hrm.get(tid, 0.0) + share
 
@@ -438,7 +450,10 @@ class Fuser:
             match = self.matcher.ouro_to_hrm(oid)
             if not match.target_ids:
                 continue
-            share = prob / len(match.target_ids)
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
             for tid in match.target_ids:
                 ouro_mapped[tid] = ouro_mapped.get(tid, 0.0) + share
         hrm_dict = dict(zip(hrm_top_ids, hrm_probs))

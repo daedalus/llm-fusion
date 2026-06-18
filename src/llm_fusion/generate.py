@@ -430,9 +430,10 @@ def generate(
                 eos_id = OURO_EOS_ID
             else:
                 hrm_ids_list = [tid]
-                ouro_ids = [tid]
+                hrm_match = fuser.matcher.hrm_to_ouro(tid)
+                ouro_ids = hrm_match.target_ids if hrm_match.target_ids else [OURO_EOS_ID]
                 hrm_gen_ids.add(tid)
-                ouro_gen_ids.add(tid)
+                ouro_gen_ids.update(ouro_ids)
                 eos_id = HRM_EOS_ID
         elif model == "ouro":
             tid, token_str, prob = sample_from_logits(ouro_logits, ouro_tok, top_k, temperature, rng)
