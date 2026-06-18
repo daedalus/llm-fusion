@@ -26,26 +26,56 @@ except ImportError:
     HAS_OURO_CACHE = False
 
 
-def _cache_key(params: dict[str, Any]) -> str:
-    raw = json.dumps(params, sort_keys=True, default=str)
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+class BenchmarkCache:
+    """Pickle-based cache for benchmark results. Loads on init, saves after each prompt."""
 
+    def __init__(self, enabled: bool = False) -> None:
+        self.enabled = enabled
+        self._data: dict[str, list[dict]] = {}
+        self._path = BENCHMARK_CACHE_DIR / "benchmark_cache.pkl"
+        if enabled:
+            self._load()
 
-def _load_cache(key: str, bench_type: str) -> list[dict] | None:
-    path = BENCHMARK_CACHE_DIR / f"{bench_type}_{key}.json"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
+    def _load(self) -> None:
+        if not self._path.exists():
+            return
+        try:
+            import pickle
+            with open(self._path, "rb") as f:
+                self._data = pickle.load(f)
+            print(f"  Cache loaded: {len(self._data)} entries from {self._path}", file=sys.stderr)
+        except Exception as e:
+            print(f"  Cache load failed: {e}", file=sys.stderr)
+            self._data = {}
 
+    def _save(self) -> None:
+        if not self.enabled:
+            return
+        BENCHMARK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        import pickle
+        with open(self._path, "wb") as f:
+            pickle.dump(self._data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-def _save_cache(key: str, bench_type: str, results: list[Any]) -> None:
-    BENCHMARK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = BENCHMARK_CACHE_DIR / f"{bench_type}_{key}.json"
-    data = [asdict(r) if hasattr(r, "__dataclass_fields__") else r for r in results]
-    path.write_text(json.dumps(data, indent=2, default=str))
+    def get(self, key: str) -> list[BenchmarkResult] | None:
+        if not self.enabled:
+            return None
+        raw = self._data.get(key)
+        if raw is None:
+            return None
+        try:
+            return [BenchmarkResult(**d) for d in raw]
+        except Exception:
+            return None
+
+    def put(self, key: str, results: list[BenchmarkResult]) -> None:
+        if not self.enabled:
+            return
+        self._data[key] = [asdict(r) for r in results]
+        self._save()
+
+    def cache_key(self, **params: Any) -> str:
+        raw = json.dumps(params, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 def save_results(results: list[Any], tag: str = "speed") -> Path:
     """Append benchmark results to a timestamped JSON file in results/."""
@@ -354,10 +384,10 @@ def run_benchmark(
     condition: str = "direct",
     base_dir: str = "",
     configs: list[dict[str, Any]] | None = None,
-    cache: bool = False,
     device: str = "auto",
     loaded: LoadedModels | None = None,
     show_completions: bool = False,
+    bench_cache: BenchmarkCache | None = None,
 ) -> list[BenchmarkResult]:
     if configs is None:
         configs = [
@@ -376,17 +406,17 @@ def run_benchmark(
             {"model": "fused", "strategy": "simple"},
         ]
 
-    if cache:
-        ck = _cache_key({
-            "text": text, "max_new_tokens": max_new_tokens,
-            "temperature": temperature, "repetition_penalty": repetition_penalty,
-            "top_k": top_k, "threshold": threshold,
-            "ouro_weight": ouro_weight, "configs": configs,
-        })
-        cached = _load_cache(ck, "speed")
+    if bench_cache is not None:
+        ck = bench_cache.cache_key(
+            text=text, max_new_tokens=max_new_tokens,
+            temperature=temperature, repetition_penalty=repetition_penalty,
+            top_k=top_k, threshold=threshold,
+            ouro_weight=ouro_weight, configs=[str(c) for c in configs],
+        )
+        cached = bench_cache.get(ck)
         if cached is not None:
-            print(f"  (loaded speed cache {ck})", file=sys.stderr)
-            return [BenchmarkResult(**d) for d in cached]
+            print(f"  (cache hit {ck})", file=sys.stderr)
+            return cached
 
     if loaded is not None:
         matcher = loaded.matcher
@@ -680,8 +710,8 @@ def run_benchmark(
             print(f"    prompt:     {prompt_short}", file=sys.stderr)
             print(f"    completion: {completion_short}", file=sys.stderr)
 
-    if cache:
-        _save_cache(ck, "speed", results)
+    if bench_cache is not None:
+        bench_cache.put(ck, results)
 
     return results
 
@@ -1101,6 +1131,7 @@ def main() -> None:
         tag = "robustness"
         print("\n" + format_robustness_table(results))
     else:
+        bench_cache = BenchmarkCache(enabled=args.benchmark_cache)
         loaded = load_models(device=args.device)
         if args.single:
             results = run_benchmark(
@@ -1108,10 +1139,10 @@ def main() -> None:
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temp,
                 repetition_penalty=args.repetition_penalty,
-                cache=args.benchmark_cache,
                 device=args.device,
                 loaded=loaded,
                 show_completions=args.show_completions,
+                bench_cache=bench_cache,
             )
             tag = "speed"
             print("\n" + format_table(results, show_completions=args.show_completions))
@@ -1126,10 +1157,10 @@ def main() -> None:
                     max_new_tokens=args.max_new_tokens,
                     temperature=args.temp,
                     repetition_penalty=args.repetition_penalty,
-                    cache=args.benchmark_cache,
                     device=args.device,
                     loaded=loaded,
                     show_completions=args.show_completions,
+                    bench_cache=bench_cache,
                 )
                 for r in bench_results:
                     key = f"{r.model}/{r.strategy}"
