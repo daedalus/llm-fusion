@@ -1032,6 +1032,8 @@ def main() -> None:
     parser.add_argument("--prompt", default="The quick brown fox jumps over the lazy dog.")
     parser.add_argument("-n", "--max-new-tokens", type=int, default=50)
     parser.add_argument("--temp", type=float, default=0.0)
+    parser.add_argument("--rep-penalty", type=float, default=1.0, dest="repetition_penalty",
+                        help="Repetition penalty (>1.0 discourages repeats)")
     parser.add_argument(
         "--robustness",
         action="store_true",
@@ -1104,6 +1106,7 @@ def main() -> None:
                 text=args.prompt,
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temp,
+                repetition_penalty=args.repetition_penalty,
                 cache=args.benchmark_cache,
                 device=args.device,
                 loaded=loaded,
@@ -1121,6 +1124,7 @@ def main() -> None:
                     text=prompt,
                     max_new_tokens=args.max_new_tokens,
                     temperature=args.temp,
+                    repetition_penalty=args.repetition_penalty,
                     cache=args.benchmark_cache,
                     device=args.device,
                     loaded=loaded,
