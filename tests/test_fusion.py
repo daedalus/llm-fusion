@@ -270,7 +270,7 @@ class TestFuser:
         assert results == []
 
     def test_fuse_logits_product_no_overlap(self, matcher) -> None:
-        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="product", threshold=0.0)
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="product")
         ouro_logits = [-100.0] * fuser.ouro_tok.get_vocab_size()
         hrm_logits = [-100.0] * fuser.hrm_tok.get_vocab_size()
         hrm_logits[42] = 10.0
@@ -379,11 +379,11 @@ class TestMinPerplexity:
         fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="min-perplexity")
         ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
         hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
-        ouro_logits[335] = 20.0
+        ouro_logits[100] = 20.0
         hrm_logits[0] = 0.1
         results = fuser.fuse_logits(ouro_logits, hrm_logits)
         tids = [tid for tid, _, _ in results]
-        assert 335 in tids
+        assert 114 in tids
 
     def test_returns_hrm_tokens_when_hrm_wins(self, matcher) -> None:
         fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="min-perplexity")
@@ -459,7 +459,7 @@ class TestSimple:
         assert 371 in tids  # hrm 371 direct
 
     def test_sums_overlapping_tokens(self, matcher) -> None:
-        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="simple", threshold=0.0)
+        fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="simple")
         ouro_logits = [0.0] * fuser.ouro_tok.get_vocab_size()
         hrm_logits = [0.0] * fuser.hrm_tok.get_vocab_size()
         ouro_logits[335] = 5.0

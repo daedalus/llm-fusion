@@ -71,7 +71,6 @@ class Fuser:
         hrm_tok: Tokenizer,
         ouro_weight: float = 0.5,
         top_k: int = 50,
-        threshold: float = 0.01,
         strategy: str = "dynamic",
         cascade_threshold: float = 0.5,
         dynamic_initial_weight: float = 0.8,
@@ -84,8 +83,7 @@ class Fuser:
         self.ouro_weight = ouro_weight
         self.hrm_weight = 1.0 - ouro_weight
         self.top_k = top_k
-        self.threshold = threshold
-        valid = ("average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid", "slerp", "simple")
+        valid = ("average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid", "slerp", "simple", "sqrt-product", "min", "log-sum", "norm-product")
         if strategy not in valid:
             raise ValueError(f"Unknown strategy: {strategy!r}")
         self.strategy = strategy
@@ -124,9 +122,8 @@ class Fuser:
             for tid in match.target_ids:
                 fused[tid] = fused.get(tid, 0.0) + share * ow
 
-        filtered = [(tid, p) for tid, p in fused.items() if p >= self.threshold]
-        filtered.sort(key=lambda x: -x[1])
-        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+        fused_items = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
 
     def _fuse_logits_product(
         self,
@@ -155,12 +152,14 @@ class Fuser:
         for tid in all_ids:
             p_ouro = ouro_given_hrm.get(tid, 0.0)
             p_hrm = hrm_probs_dict.get(tid, 0.0)
-            p = p_ouro * p_hrm
-            if p >= self.threshold:
-                fused[tid] = p
+            fused[tid] = p_ouro * p_hrm
 
-        filtered = sorted(fused.items(), key=lambda x: -x[1])
-        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+        total = sum(fused.values())
+        if total > 0:
+            fused = {tid: p / total for tid, p in fused.items()}
+
+        fused_items = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
 
     @staticmethod
     def _distribution_entropy(logits: list[float], k: int) -> float:
@@ -179,8 +178,7 @@ class Fuser:
 
         if hrm_entropy < ouro_entropy:
             ids, probs = softmax_top_k(hrm_logits, self.top_k)
-            filtered = [(tid, p) for tid, p in zip(ids, probs) if p >= self.threshold]
-            return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+            return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in zip(ids, probs)]
 
         ids, probs = softmax_top_k(ouro_logits, self.top_k)
         fused: dict[int, float] = {}
@@ -191,9 +189,8 @@ class Fuser:
             share = prob / len(match.target_ids)
             for tid in match.target_ids:
                 fused[tid] = fused.get(tid, 0.0) + share
-        filtered = [(tid, p) for tid, p in fused.items() if p >= self.threshold]
-        filtered.sort(key=lambda x: -x[1])
-        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+        fused_items = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
 
     def _fuse_logits_minperplexity(
         self,
@@ -206,13 +203,23 @@ class Fuser:
         if hrm_entropy < ouro_entropy:
             self.last_routed_model = "hrm"
             ids, probs = softmax_top_k(hrm_logits, self.top_k)
-            filtered = [(tid, p) for tid, p in zip(ids, probs) if p >= self.threshold]
-            return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+            return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in zip(ids, probs)]
 
         self.last_routed_model = "ouro"
         ids, probs = softmax_top_k(ouro_logits, self.top_k)
-        filtered = [(tid, p) for tid, p in zip(ids, probs) if p >= self.threshold]
-        return [(tid, p, self.ouro_tok.decode([tid])) for tid, p in filtered]
+        fused: dict[int, float] = {}
+        for oid, prob in zip(ids, probs):
+            match = self.matcher.ouro_to_hrm(oid)
+            if not match.target_ids:
+                continue
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
+            for tid in match.target_ids:
+                fused[tid] = fused.get(tid, 0.0) + share
+        fused_items = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
 
     def _fuse_logits_slerp(
         self,
@@ -279,12 +286,10 @@ class Fuser:
 
         fused = {}
         for i, tid in enumerate(all_ids):
-            p = blended[i] / norm_blend
-            if p >= self.threshold:
-                fused[tid] = p
+            fused[tid] = blended[i] / norm_blend
 
-        filtered = sorted(fused.items(), key=lambda x: -x[1])
-        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+        fused_items = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
 
     def _fuse_logits_simple(
         self,
@@ -314,9 +319,163 @@ class Fuser:
         for tid, p in hrm_probs_dict.items():
             all_probs[tid] = all_probs.get(tid, 0.0) + p
 
-        filtered = [(tid, p) for tid, p in all_probs.items() if p >= self.threshold]
-        filtered.sort(key=lambda x: -x[1])
-        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+        fused_items = sorted(all_probs.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
+
+    def _fuse_logits_sqrt_product(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
+        hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
+
+        ouro_given_hrm: dict[int, float] = {}
+        for oid, prob in zip(ouro_top_ids, ouro_probs):
+            match = self.matcher.ouro_to_hrm(oid)
+            if not match.target_ids:
+                continue
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
+            for tid in match.target_ids:
+                ouro_given_hrm[tid] = ouro_given_hrm.get(tid, 0.0) + share
+
+        hrm_probs_dict = dict(zip(hrm_top_ids, hrm_probs))
+
+        all_ids = set(ouro_given_hrm) | set(hrm_probs_dict)
+        fused = {}
+        for tid in all_ids:
+            p_ouro = ouro_given_hrm.get(tid, 0.0)
+            p_hrm = hrm_probs_dict.get(tid, 0.0)
+            fused[tid] = math.sqrt(p_ouro * p_hrm)
+
+        total = sum(fused.values())
+        if total > 0:
+            fused = {tid: p / total for tid, p in fused.items()}
+
+        fused_items = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
+
+    def _fuse_logits_min(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
+        hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
+
+        ouro_given_hrm: dict[int, float] = {}
+        for oid, prob in zip(ouro_top_ids, ouro_probs):
+            match = self.matcher.ouro_to_hrm(oid)
+            if not match.target_ids:
+                continue
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
+            for tid in match.target_ids:
+                ouro_given_hrm[tid] = ouro_given_hrm.get(tid, 0.0) + share
+
+        hrm_probs_dict = dict(zip(hrm_top_ids, hrm_probs))
+
+        all_ids = set(ouro_given_hrm) | set(hrm_probs_dict)
+        fused = {}
+        for tid in all_ids:
+            p_ouro = ouro_given_hrm.get(tid, 0.0)
+            p_hrm = hrm_probs_dict.get(tid, 0.0)
+            fused[tid] = min(p_ouro, p_hrm)
+
+        total = sum(fused.values())
+        if total > 0:
+            fused = {tid: p / total for tid, p in fused.items()}
+
+        fused_items = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
+
+    def _fuse_logits_log_sum(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
+        hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
+
+        ouro_given_hrm: dict[int, float] = {}
+        for oid, prob in zip(ouro_top_ids, ouro_probs):
+            match = self.matcher.ouro_to_hrm(oid)
+            if not match.target_ids:
+                continue
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
+            for tid in match.target_ids:
+                ouro_given_hrm[tid] = ouro_given_hrm.get(tid, 0.0) + share
+
+        hrm_probs_dict = dict(zip(hrm_top_ids, hrm_probs))
+
+        all_ids = set(ouro_given_hrm) | set(hrm_probs_dict)
+        fused = {}
+        for tid in all_ids:
+            p_ouro = max(ouro_given_hrm.get(tid, 0.0), 1e-10)
+            p_hrm = max(hrm_probs_dict.get(tid, 0.0), 1e-10)
+            fused[tid] = math.log(p_ouro) + math.log(p_hrm)
+
+        if fused:
+            max_log = max(fused.values())
+            fused = {tid: math.exp(v - max_log) for tid, v in fused.items()}
+
+        total = sum(fused.values())
+        if total > 0:
+            fused = {tid: p / total for tid, p in fused.items()}
+
+        fused_items = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
+
+    def _fuse_logits_norm_product(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        import torch
+
+        ouro_top_ids, _ = softmax_top_k(ouro_logits, self.top_k)
+        hrm_top_ids, _ = softmax_top_k(hrm_logits, self.top_k)
+
+        ouro_given_hrm: dict[int, float] = {}
+        for oid in ouro_top_ids:
+            match = self.matcher.ouro_to_hrm(oid)
+            if not match.target_ids:
+                continue
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            for tid in match.target_ids:
+                ouro_given_hrm[tid] = ouro_given_hrm.get(tid, 0.0) + match_weight / len(match.target_ids)
+
+        hrm_probs_dict = dict(zip(hrm_top_ids, softmax_top_k(hrm_logits, self.top_k)[1]))
+
+        all_ids = sorted(set(ouro_given_hrm) | set(hrm_probs_dict))
+        if not all_ids:
+            return []
+
+        z_ouro = torch.tensor([ouro_given_hrm.get(tid, 0.0) for tid in all_ids], dtype=torch.float32)
+        z_hrm = torch.tensor([hrm_probs_dict.get(tid, 0.0) for tid in all_ids], dtype=torch.float32)
+
+        s_ouro = torch.softmax(z_ouro, dim=0)
+        s_hrm = torch.softmax(z_hrm, dim=0)
+
+        product = s_ouro * s_hrm
+        normed = product / product.sum()
+
+        fused = {}
+        for i, tid in enumerate(all_ids):
+            fused[tid] = float(normed[i])
+
+        fused_items = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
 
     def _fuse_logits_cascade(
         self,
@@ -333,13 +492,11 @@ class Fuser:
                 share = prob / len(match.target_ids)
                 for tid in match.target_ids:
                     fused[tid] = fused.get(tid, 0.0) + share
-            filtered = [(tid, p) for tid, p in fused.items() if p >= self.threshold]
-            filtered.sort(key=lambda x: -x[1])
-            return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+            fused_items = sorted(fused.items(), key=lambda x: -x[1])
+            return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
 
         ids, probs = softmax_top_k(hrm_logits, self.top_k)
-        filtered = [(tid, p) for tid, p in zip(ids, probs) if p >= self.threshold]
-        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in filtered]
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in zip(ids, probs)]
 
     def _fuse_logits_dynamic(
         self,
@@ -436,6 +593,14 @@ class Fuser:
             return self._fuse_logits_slerp(ouro_logits, hrm_logits)
         if self.strategy == "simple":
             return self._fuse_logits_simple(ouro_logits, hrm_logits)
+        if self.strategy == "sqrt-product":
+            return self._fuse_logits_sqrt_product(ouro_logits, hrm_logits)
+        if self.strategy == "min":
+            return self._fuse_logits_min(ouro_logits, hrm_logits)
+        if self.strategy == "log-sum":
+            return self._fuse_logits_log_sum(ouro_logits, hrm_logits)
+        if self.strategy == "norm-product":
+            return self._fuse_logits_norm_product(ouro_logits, hrm_logits)
         return self._fuse_logits_average(ouro_logits, hrm_logits)
 
     def model_distributions(
