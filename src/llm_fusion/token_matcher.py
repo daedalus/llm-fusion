@@ -57,6 +57,94 @@ class TokenMatcher:
         self.ouro_special = _load_added_tokens(self.ouro_path)
         self.hrm_special = _load_added_tokens(self.hrm_path)
 
+        self._build_union_mapping()
+
+    def _build_union_mapping(self) -> None:
+        """Build a union vocabulary with new token IDs.
+
+        Each unique token string gets a new union ID. Both Ouro and HRM
+        tokens can map to and from the union vocabulary.
+        """
+        self.union_str_to_id: dict[str, int] = {}
+        self.union_id_to_str: dict[int, str] = {}
+        self.ouro_to_union_ids: dict[int, int] = {}
+        self.hrm_to_union_ids: dict[int, int] = {}
+        self.union_to_ouro_ids: dict[int, list[int]] = {}
+        self.union_to_hrm_ids: dict[int, list[int]] = {}
+
+        next_id = 0
+
+        # Add special tokens first
+        for specials, tok in [(self.ouro_special, self.ouro_tok),
+                              (self.hrm_special, self.hrm_tok)]:
+            for sid, sstr in specials.items():
+                if sstr not in self.union_str_to_id:
+                    uid = next_id
+                    next_id += 1
+                    self.union_str_to_id[sstr] = uid
+                    self.union_id_to_str[uid] = sstr
+
+        # Add all vocab tokens from both models
+        for ouro_id, ouro_str in self.ouro_id_to_str.items():
+            if ouro_str not in self.union_str_to_id:
+                uid = next_id
+                next_id += 1
+                self.union_str_to_id[ouro_str] = uid
+                self.union_id_to_str[uid] = ouro_str
+
+        for hrm_id, hrm_str in self.hrm_id_to_str.items():
+            if hrm_str not in self.union_str_to_id:
+                uid = next_id
+                next_id += 1
+                self.union_str_to_id[hrm_str] = uid
+                self.union_id_to_str[uid] = hrm_str
+
+        # Build Ouro -> Union mapping
+        for ouro_id, ouro_str in self.ouro_id_to_str.items():
+            uid = self.union_str_to_id.get(ouro_str)
+            if uid is not None:
+                self.ouro_to_union_ids[ouro_id] = uid
+                self.union_to_ouro_ids.setdefault(uid, []).append(ouro_id)
+
+        # Build HRM -> Union mapping
+        for hrm_id, hrm_str in self.hrm_id_to_str.items():
+            uid = self.union_str_to_id.get(hrm_str)
+            if uid is not None:
+                self.hrm_to_union_ids[hrm_id] = uid
+                self.union_to_hrm_ids.setdefault(uid, []).append(hrm_id)
+
+    def ouro_to_union(self, token_id: int) -> Match:
+        """Map Ouro token ID to union token ID."""
+        uid = self.ouro_to_union_ids.get(token_id)
+        if uid is None:
+            return Match("invalid", [], note=f"Ouro {token_id} not in union")
+        return Match("exact", [uid], source_str=self.ouro_id_to_str.get(token_id),
+                     target_str=self.union_id_to_str.get(uid))
+
+    def hrm_to_union(self, token_id: int) -> Match:
+        """Map HRM token ID to union token ID."""
+        uid = self.hrm_to_union_ids.get(token_id)
+        if uid is None:
+            return Match("invalid", [], note=f"HRM {token_id} not in union")
+        return Match("exact", [uid], source_str=self.hrm_id_to_str.get(token_id),
+                     target_str=self.union_id_to_str.get(uid))
+
+    def union_to_ouro(self, union_id: int) -> Match:
+        """Map union token ID back to Ouro token ID(s)."""
+        ouro_ids = self.union_to_ouro_ids.get(union_id, [])
+        if not ouro_ids:
+            return Match("invalid", [], note=f"Union {union_id} not in Ouro")
+        return Match("exact", ouro_ids, source_str=self.union_id_to_str.get(union_id),
+                     target_str=self.ouro_id_to_str.get(ouro_ids[0]) if ouro_ids else None)
+
+    def union_to_hrm(self, union_id: int) -> Match:
+        """Map union token ID back to HRM token ID(s)."""
+        hrm_ids = self.union_to_hrm_ids.get(union_id, [])
+        if not hrm_ids:
+            return Match("invalid", [], note=f"Union {union_id} not in HRM")
+        return Match("exact", hrm_ids, source_str=self.union_id_to_str.get(union_id),
+                     target_str=self.hrm_id_to_str.get(hrm_ids[0]) if hrm_ids else None)
+
     def _check_dirs(self) -> None:
         missing = []
         for p in [self.ouro_path, self.hrm_path]:
