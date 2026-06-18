@@ -515,12 +515,11 @@ def run_benchmark(
             if step == 0:
                 ttft = time.time() - t0
 
-            if model == "fused" and tid == HRM_EOS_ID:
-                break
-            elif model == "ouro" and tid == OURO_EOS_ID:
-                break
-            elif model == "hrm" and tid == HRM_EOS_ID:
-                break
+            check_tid = hrm_tid if model == "fused" else (tid if model in ("ouro", "hrm") else None)
+            if check_tid is not None:
+                eos = HRM_EOS_ID if model in ("fused", "hrm") else OURO_EOS_ID
+                if check_tid == eos:
+                    break
 
             if token_str:
                 generated_text += token_str
