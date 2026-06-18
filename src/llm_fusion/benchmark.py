@@ -745,10 +745,11 @@ def run_benchmark(
         r.memory_mb = maybe_get_memory_mb()
         r.prompt = text
         r.completion = generated_text
-        if model in ("ouro", "fused"):
-            r.ouro_ppl = _quick_ppl(text, ouro_model, ouro_tok, device)
-        if model in ("hrm", "fused"):
-            hrm_formatted = format_hrm_prompt(text, "direct")
+        full_text = text + generated_text
+        if model in ("ouro", "fused") and generated_text:
+            r.ouro_ppl = _quick_ppl(full_text, ouro_model, ouro_tok, device)
+        if model in ("hrm", "fused") and generated_text:
+            hrm_formatted = format_hrm_prompt(full_text, "direct")
             r.hrm_ppl = _quick_ppl(hrm_formatted, hrm_model, hrm_tok, device)
         if model == "fused":
             r.fused_ppl = (r.ouro_ppl + r.hrm_ppl) / 2
