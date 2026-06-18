@@ -712,7 +712,7 @@ def run_benchmark(
                 hrm_logits_list = hrm_logits_t.tolist()
                 hrm_tid, ouro_tid, token_str, prob = fuser.sample_token_pair(ouro_logits_list, hrm_logits_list, temperature, rng=rng)
 
-                ouro_p = parent_prob_for_token(ouro_logits_list, hrm_tid, top_k)
+                ouro_p = parent_prob_for_token(ouro_logits_list, ouro_tid, top_k)
                 hrm_p = hrm_dist.get(hrm_tid, 0.0)
 
                 gain = _calc_gain(prob, ouro_p, hrm_p)
@@ -740,8 +740,10 @@ def run_benchmark(
                 agree_steps += agreement_rate(ouro_logits_list, hrm_logits_list)
 
                 hrm_top1 = max(range(len(hrm_logits_list)), key=lambda i: hrm_logits_list[i])
+                ouro_top1 = max(range(len(ouro_logits_list)), key=lambda i: ouro_logits_list[i])
+
                 top1_hrm_hits += int(hrm_top1 == hrm_tid)
-                top1_ouro_hits += int(ouro_p > hrm_p)
+                top1_ouro_hits += int(ouro_top1 == ouro_tid)
                 top1_fused_hits += int(prob > max(ouro_p, hrm_p))
 
                 top10_ouro_hits += int(ouro_p > 0)
@@ -752,10 +754,8 @@ def run_benchmark(
                 if best_parent_p > 0 and prob > 0:
                     regret_sum += math.log(best_parent_p) - math.log(prob)
 
-                ouro_contrib = ouro_p
-                total_contrib = ouro_p + hrm_p
-                if total_contrib > 0:
-                    ouro_contrib_sum += ouro_contrib / total_contrib
+                if ouro_p + hrm_p > 0:
+                    ouro_contrib_sum += ouro_p / (ouro_p + hrm_p)
 
                 cal_probs.append(prob)
                 cal_outcomes.append(prob > 0)
@@ -1051,7 +1051,8 @@ def run_robustness_benchmark(
             total_kl_ho += compute_kl(hrm_dist, ouro_dist)
 
             tid, token_str, prob = fuser.sample_token(ouro_logits, hrm_logits, temperature)
-            ouro_p = parent_prob_for_token(ouro_logits, tid, top_k)
+            ouro_match = ouro_tok.encode(token_str).ids
+            ouro_p = parent_prob_for_token(ouro_logits, ouro_match[0], top_k) if ouro_match else 0.0
             hrm_p = parent_prob_for_token(hrm_logits, tid, top_k)
             total_gain += _calc_gain(prob, ouro_p, hrm_p)
             if prob > max(ouro_p, hrm_p):

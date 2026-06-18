@@ -246,6 +246,11 @@ def evaluate_text(
         ouro_prob = parent_prob_for_token(ouro_logits, target_tid)
         hrm_prob = parent_prob_for_token(hrm_logits, target_tid)
 
+        target_str = hrm_tok.decode([target_tid])
+        ouro_match_ids = ouro_tok.encode(target_str).ids
+        if ouro_match_ids:
+            ouro_prob = parent_prob_for_token(ouro_logits, ouro_match_ids[0])
+
         gain = fusion_gain(fused_prob, ouro_prob, hrm_prob)
 
         total_gain += gain
@@ -266,11 +271,12 @@ def evaluate_text(
         if fused_prob > max(ouro_prob, hrm_prob):
             fusion_wins += 1
 
-        topk_ouro += topk_accuracy(ouro_logits, target_tid, 10)
+        topk_ouro += parent_prob_for_token(ouro_logits, ouro_match_ids[0]) > 0 if ouro_match_ids else False
         topk_hrm += topk_accuracy(hrm_logits, target_tid, 10)
         topk_fused += fused_prob > 0
         agree_count += agreement_rate(ouro_logits, hrm_logits)
-        top1_ouro += top1_accuracy(ouro_logits, target_tid)
+        ouro_top1 = max(range(len(ouro_logits)), key=lambda i: ouro_logits[i])
+        top1_ouro += int(ouro_top1 == ouro_match_ids[0]) if ouro_match_ids else 0
         top1_hrm += top1_accuracy(hrm_logits, target_tid)
         top1_fused += fused_prob == max(p for _, p, _ in candidates) if candidates else False
         regret_sum += fusion_regret(fused_prob, ouro_prob, hrm_prob)
