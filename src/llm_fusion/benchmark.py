@@ -493,7 +493,7 @@ def run_benchmark(
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k, softmax_top_k_torch
     from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID, apply_repetition_penalty
     from llm_fusion.metrics import fusion_gain as _calc_gain
-    from llm_fusion.metrics import parent_prob_for_token
+    from llm_fusion.metrics import parent_prob_for_token, agreement_rate, calibration_error, token_diversity
 
     if seed is not None:
         _random.seed(seed)
