@@ -397,9 +397,12 @@ def run_benchmark(
                     if step > 0 and ouro_cache is not None:
                         ouro_kwargs["past_key_values"] = ouro_cache
                         ouro_kwargs["use_cache"] = True
-                    _single_token[0] = ouro_ids[0]
+                        _single_token[0] = ouro_ids[0]
+                        ouro_input = _single_token
+                    else:
+                        ouro_input = torch.tensor([ouro_ids], device=device)
                     ouro_out = ouro_model(
-                        input_ids=_single_token,
+                        input_ids=ouro_input,
                         **ouro_kwargs,
                     )
                 ouro_logits_t = ouro_out.logits[0, -1, :]
