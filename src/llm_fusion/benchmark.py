@@ -182,6 +182,65 @@ def maybe_get_memory_mb() -> float:
         return 0.0
 
 
+@dataclass
+class LoadedModels:
+    matcher: Any
+    ouro_tok: Any
+    hrm_tok: Any
+    ouro_model: Any = None
+    hrm_model: Any = None
+    device: str = "cpu"
+
+
+def load_models(
+    base_dir: str = "",
+    device: str = "auto",
+    local: bool = True,
+) -> LoadedModels:
+    import torch
+    from tokenizers import Tokenizer
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from llm_fusion.loader import patch_ouro_model
+    from llm_fusion.token_matcher import TokenMatcher
+
+    bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
+    ouro_tok_path = bd / "Ouro-1.4B/tokenizer.json"
+    hrm_tok_path = bd / "HRM-Text-1B/tokenizer.json"
+    matcher = TokenMatcher(str(ouro_tok_path), str(hrm_tok_path))
+    ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
+    hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
+
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.bfloat16 if device == "cpu" else torch.float16
+
+    print(f"Loading models on {device}...", file=sys.stderr)
+
+    ouro_model_path = str(bd / "Ouro-1.4B") if local else "ByteDance/Ouro-1.4B"
+    ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
+    patch_ouro_model(ouro_config)
+    ouro_model = AutoModelForCausalLM.from_pretrained(
+        ouro_model_path,
+        config=ouro_config,
+        torch_dtype=dtype,
+        device_map=device,
+        trust_remote_code=True,
+    )
+
+    hrm_model_path = str(bd / "HRM-Text-1B") if local else "sapientinc/HRM-Text-1B"
+    hrm_model = AutoModelForCausalLM.from_pretrained(
+        hrm_model_path,
+        torch_dtype=dtype,
+        device_map=device,
+        attn_implementation="sdpa",
+    )
+
+    print(f"Models loaded on {device}", file=sys.stderr)
+    return LoadedModels(matcher=matcher, ouro_tok=ouro_tok, hrm_tok=hrm_tok,
+                        ouro_model=ouro_model, hrm_model=hrm_model, device=device)
+
+
 def run_benchmark(
     text: str = "The quick brown fox jumps over the lazy dog.",
     max_new_tokens: int = 50,
@@ -196,6 +255,7 @@ def run_benchmark(
     configs: list[dict[str, Any]] | None = None,
     cache: bool = False,
     device: str = "auto",
+    loaded: LoadedModels | None = None,
 ) -> list[BenchmarkResult]:
     if configs is None:
         configs = [
@@ -225,54 +285,64 @@ def run_benchmark(
             print(f"  (loaded speed cache {ck})", file=sys.stderr)
             return [BenchmarkResult(**d) for d in cached]
 
-    import torch
-    from tokenizers import Tokenizer
-    from transformers import AutoConfig, AutoModelForCausalLM
+    if loaded is not None:
+        matcher = loaded.matcher
+        ouro_tok = loaded.ouro_tok
+        hrm_tok = loaded.hrm_tok
+        ouro_model = loaded.ouro_model
+        hrm_model = loaded.hrm_model
+        device = loaded.device
+    else:
+        import torch
+        from tokenizers import Tokenizer
+        from transformers import AutoConfig, AutoModelForCausalLM
 
+        from llm_fusion.loader import patch_ouro_model
+        from llm_fusion.token_matcher import TokenMatcher
+
+        bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
+        ouro_tok_path = bd / "Ouro-1.4B/tokenizer.json"
+        hrm_tok_path = bd / "HRM-Text-1B/tokenizer.json"
+        matcher = TokenMatcher(str(ouro_tok_path), str(hrm_tok_path))
+        ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
+        hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
+
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.bfloat16 if device == "cpu" else torch.float16
+
+        needs_ouro = any(c["model"] in ("fused", "ouro") for c in configs)
+        needs_hrm = any(c["model"] in ("fused", "hrm") for c in configs)
+
+        ouro_model = None
+        hrm_model = None
+
+        if needs_ouro:
+            ouro_model_path = str(bd / "Ouro-1.4B")
+            ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
+            patch_ouro_model(ouro_config)
+            ouro_model = AutoModelForCausalLM.from_pretrained(
+                ouro_model_path,
+                config=ouro_config,
+                torch_dtype=dtype,
+                device_map=device,
+                trust_remote_code=True,
+            )
+
+        if needs_hrm:
+            hrm_model_path = str(bd / "HRM-Text-1B")
+            hrm_model = AutoModelForCausalLM.from_pretrained(
+                hrm_model_path,
+                torch_dtype=dtype,
+                device_map=device,
+                attn_implementation="sdpa",
+            )
+
+    import torch
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k, softmax_top_k_torch
     from llm_fusion.generate import format_hrm_prompt
-    from llm_fusion.loader import patch_ouro_model
     from llm_fusion.metrics import fusion_gain as _calc_gain
     from llm_fusion.metrics import parent_prob_for_token
-    from llm_fusion.token_matcher import TokenMatcher
-
-    bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
-    ouro_tok_path = bd / "Ouro-1.4B/tokenizer.json"
-    hrm_tok_path = bd / "HRM-Text-1B/tokenizer.json"
-    matcher = TokenMatcher(str(ouro_tok_path), str(hrm_tok_path))
-    ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
-    hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
-
-    if device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if device == "cpu" else torch.float16
-
-    needs_ouro = any(c["model"] in ("fused", "ouro") for c in configs)
-    needs_hrm = any(c["model"] in ("fused", "hrm") for c in configs)
-
-    ouro_model = None
-    hrm_model = None
-
-    if needs_ouro:
-        ouro_model_path = str(bd / "Ouro-1.4B")
-        ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
-        patch_ouro_model(ouro_config)
-        ouro_model = AutoModelForCausalLM.from_pretrained(
-            ouro_model_path,
-            config=ouro_config,
-            torch_dtype=dtype,
-            device_map=device,
-            trust_remote_code=True,
-        )
-
-    if needs_hrm:
-        hrm_model_path = str(bd / "HRM-Text-1B")
-        hrm_model = AutoModelForCausalLM.from_pretrained(
-            hrm_model_path,
-            torch_dtype=dtype,
-            device_map=device,
-            attn_implementation="sdpa",
-        )
 
     results: list[BenchmarkResult] = []
 
@@ -889,44 +959,48 @@ def main() -> None:
         )
         tag = "robustness"
         print("\n" + format_robustness_table(results))
-    elif args.single:
-        results = run_benchmark(
-            text=args.prompt,
-            max_new_tokens=args.max_new_tokens,
-            temperature=args.temp,
-            cache=args.benchmark_cache,
-            device=args.device,
-        )
-        tag = "speed"
-        print("\n" + format_table(results))
     else:
-        prompts = [b["prompt"] for b in ROBUSTNESS_BATTERY]
-        print(f"Running benchmark on {len(prompts)} prompts...", file=sys.stderr)
-        all_results: dict[str, list[BenchmarkResult]] = {}
-        for i, prompt in enumerate(prompts):
-            print(f"  [{i+1}/{len(prompts)}] {prompt[:40]}...", file=sys.stderr)
-            bench_results = run_benchmark(
-                text=prompt,
+        loaded = load_models(device=args.device)
+        if args.single:
+            results = run_benchmark(
+                text=args.prompt,
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temp,
                 cache=args.benchmark_cache,
                 device=args.device,
+                loaded=loaded,
             )
-            for r in bench_results:
-                key = f"{r.model}/{r.strategy}"
-                if key not in all_results:
-                    all_results[key] = []
-                all_results[key].append(r)
+            tag = "speed"
+            print("\n" + format_table(results))
+        else:
+            prompts = [b["prompt"] for b in ROBUSTNESS_BATTERY]
+            print(f"Running benchmark on {len(prompts)} prompts...", file=sys.stderr)
+            all_results: dict[str, list[BenchmarkResult]] = {}
+            for i, prompt in enumerate(prompts):
+                print(f"  [{i+1}/{len(prompts)}] {prompt[:40]}...", file=sys.stderr)
+                bench_results = run_benchmark(
+                    text=prompt,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temp,
+                    cache=args.benchmark_cache,
+                    device=args.device,
+                    loaded=loaded,
+                )
+                for r in bench_results:
+                    key = f"{r.model}/{r.strategy}"
+                    if key not in all_results:
+                        all_results[key] = []
+                    all_results[key].append(r)
 
-        averaged: list[BenchmarkResult] = []
-        for key in sorted(all_results):
-            rs = all_results[key]
-            n = len(rs)
-            averaged.append(BenchmarkResult(
-                model=rs[0].model,
-                strategy=rs[0].strategy,
-                tokens_generated=round(sum(r.tokens_generated for r in rs) / n),
-                decoding_tps=sum(r.decoding_tps for r in rs) / n,
+            averaged: list[BenchmarkResult] = []
+            for key in sorted(all_results):
+                rs = all_results[key]
+                n = len(rs)
+                averaged.append(BenchmarkResult(
+                    model=rs[0].model,
+                    strategy=rs[0].strategy,
+                    tokens_generated=round(sum(r.tokens_generated for r in rs) / n),
+                    decoding_tps=sum(r.decoding_tps for r in rs) / n,
                 generation_tps=sum(r.generation_tps for r in rs) / n,
                 ttft_s=sum(r.ttft_s for r in rs) / n,
                 memory_mb=max(r.memory_mb for r in rs),
