@@ -178,3 +178,91 @@ class TestRoundTrip:
         ouro_ids = matcher.ouro_tok.encode(" the").ids
         m = matcher.map_sequence(ouro_ids, "ouro")
         assert len(m.target_ids) != len(ouro_ids)
+
+
+class TestUnionMapping:
+    def test_union_size(self, matcher) -> None:
+        assert len(matcher.union_str_to_id) > 0
+        assert len(matcher.union_id_to_str) == len(matcher.union_str_to_id)
+
+    def test_ouro_to_union_valid(self, matcher) -> None:
+        m = matcher.ouro_to_union(335)
+        assert m.confidence == "exact"
+        assert len(m.target_ids) == 1
+        assert m.target_ids[0] in matcher.union_id_to_str
+
+    def test_ouro_to_union_invalid(self, matcher) -> None:
+        m = matcher.ouro_to_union(999999)
+        assert m.confidence == "invalid"
+        assert m.target_ids == []
+
+    def test_hrm_to_union_valid(self, matcher) -> None:
+        m = matcher.hrm_to_union(371)
+        assert m.confidence == "exact"
+        assert len(m.target_ids) == 1
+        assert m.target_ids[0] in matcher.union_id_to_str
+
+    def test_hrm_to_union_invalid(self, matcher) -> None:
+        m = matcher.hrm_to_union(999999)
+        assert m.confidence == "invalid"
+        assert m.target_ids == []
+
+    def test_union_to_ouro_valid(self, matcher) -> None:
+        uid = matcher.ouro_to_union(335).target_ids[0]
+        m = matcher.union_to_ouro(uid)
+        assert m.confidence == "exact"
+        assert 335 in m.target_ids
+
+    def test_union_to_ouro_invalid(self, matcher) -> None:
+        m = matcher.union_to_ouro(999999)
+        assert m.confidence == "invalid"
+        assert m.target_ids == []
+
+    def test_union_to_hrm_valid(self, matcher) -> None:
+        uid = matcher.hrm_to_union(371).target_ids[0]
+        m = matcher.union_to_hrm(uid)
+        assert m.confidence == "exact"
+        assert 371 in m.target_ids
+
+    def test_union_to_hrm_invalid(self, matcher) -> None:
+        m = matcher.union_to_hrm(999999)
+        assert m.confidence == "invalid"
+        assert m.target_ids == []
+
+    def test_ouro_union_roundtrip(self, matcher) -> None:
+        for oid in [0, 100, 335, 7042]:
+            m = matcher.ouro_to_union(oid)
+            if m.confidence == "invalid":
+                continue
+            uid = m.target_ids[0]
+            back = matcher.union_to_ouro(uid)
+            assert oid in back.target_ids
+
+    def test_hrm_union_roundtrip(self, matcher) -> None:
+        for hid in [5, 114, 371, 6004]:
+            m = matcher.hrm_to_union(hid)
+            if m.confidence == "invalid":
+                continue
+            uid = m.target_ids[0]
+            back = matcher.union_to_hrm(uid)
+            assert hid in back.target_ids
+
+    def test_shared_token_same_union_id(self, matcher) -> None:
+        m_ouro = matcher.ouro_to_union(335)
+        m_hrm = matcher.hrm_to_union(371)
+        assert m_ouro.target_ids[0] == m_hrm.target_ids[0]
+
+    def test_union_covers_ouro_vocab(self, matcher) -> None:
+        for oid in list(matcher.ouro_id_to_str.keys())[:100]:
+            m = matcher.ouro_to_union(oid)
+            assert m.confidence == "exact", f"Ouro {oid} not in union"
+
+    def test_union_covers_hrm_vocab(self, matcher) -> None:
+        for hid in list(matcher.hrm_id_to_str.keys())[:100]:
+            m = matcher.hrm_to_union(hid)
+            assert m.confidence == "exact", f"HRM {hid} not in union"
+
+    def test_special_tokens_in_union(self, matcher) -> None:
+        for sid in list(matcher.ouro_special.keys())[:5]:
+            m = matcher.ouro_to_union(sid)
+            assert m.confidence == "exact"
