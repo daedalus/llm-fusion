@@ -379,7 +379,8 @@ def run_benchmark(
     if cache:
         ck = _cache_key({
             "text": text, "max_new_tokens": max_new_tokens,
-            "temperature": temperature, "top_k": top_k, "threshold": threshold,
+            "temperature": temperature, "repetition_penalty": repetition_penalty,
+            "top_k": top_k, "threshold": threshold,
             "ouro_weight": ouro_weight, "configs": configs,
         })
         cached = _load_cache(ck, "speed")
