@@ -446,7 +446,7 @@ def generate(
             hrm_gen_ids.add(tid)
             eos_id = HRM_EOS_ID
 
-        if tid == eos_id:
+        if tid in (OURO_EOS_ID, HRM_EOS_ID):
             print(f"\n[EOS at step {step + 1}]")
             break
 

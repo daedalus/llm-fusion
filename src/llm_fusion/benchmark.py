@@ -343,7 +343,7 @@ def run_benchmark(
 
     import torch
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k, softmax_top_k_torch
-    from llm_fusion.generate import format_hrm_prompt
+    from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID
     from llm_fusion.metrics import fusion_gain as _calc_gain
     from llm_fusion.metrics import parent_prob_for_token
 
@@ -514,6 +514,9 @@ def run_benchmark(
 
             if step == 0:
                 ttft = time.time() - t0
+
+            if tid in (OURO_EOS_ID, HRM_EOS_ID):
+                break
 
             if token_str:
                 generated_text += token_str
