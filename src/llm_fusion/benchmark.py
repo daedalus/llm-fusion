@@ -377,7 +377,6 @@ def run_benchmark(
     max_new_tokens: int = 50,
     temperature: float = 0.0,
     top_k: int = 30,
-    threshold: float = 0.01,
     ouro_weight: float = 0.5,
     local: bool = True,
     repetition_penalty: float = 1.0,
@@ -412,7 +411,7 @@ def run_benchmark(
         ck = bench_cache.cache_key(
             text=text, max_new_tokens=max_new_tokens,
             temperature=temperature, repetition_penalty=repetition_penalty,
-            seed=seed, top_k=top_k, threshold=threshold,
+            seed=seed, top_k=top_k,
             ouro_weight=ouro_weight, configs=[str(c) for c in configs],
         )
         cached = bench_cache.get(ck)
@@ -499,7 +498,7 @@ def run_benchmark(
 
         r = BenchmarkResult(model=model, strategy=strategy)
 
-        fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, strategy)
+        fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, strategy)
 
         if model in ("ouro", "fused"):
             ouro_prompt_ids = ouro_tok.encode(text).ids
@@ -851,7 +850,6 @@ def run_robustness_benchmark(
     max_new_tokens: int = 50,
     temperature: float = 0.0,
     top_k: int = 30,
-    threshold: float = 0.01,
     ouro_weight: float = 0.5,
     _local: bool = True,
     base_dir: str = "",
@@ -865,7 +863,7 @@ def run_robustness_benchmark(
     if cache:
         ck = _cache_key({
             "max_new_tokens": max_new_tokens, "temperature": temperature,
-            "top_k": top_k, "threshold": threshold, "ouro_weight": ouro_weight,
+            "top_k": top_k, "ouro_weight": ouro_weight,
             "battery": [e["prompt"] for e in battery],
         })
         cached = _load_cache(ck, "robustness")
@@ -914,7 +912,7 @@ def run_robustness_benchmark(
         attn_implementation="sdpa",
     )
 
-    fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, threshold, "average")
+    fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, "average")
 
     results: list[RobustnessResult] = []
 

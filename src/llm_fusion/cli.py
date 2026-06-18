@@ -31,7 +31,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sampling temperature (0=greedy)",
     )
     parser.add_argument("--top-k", type=int, default=30, help="Top-k tokens per model")
-    parser.add_argument("--threshold", type=float, default=0.01, help="Min probability")
     parser.add_argument(
         "--ouro-weight",
         type=float,
@@ -61,9 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--strategy",
-        choices=["average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid", "slerp", "simple"],
+        choices=["average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid", "slerp", "simple", "sqrt-product", "min", "log-sum", "norm-product"],
         default="dynamic",
-        help="Fusion strategy: average, product, min-entropy, cascade, or dynamic",
+        help="Fusion strategy: average, product, min-entropy, cascade, dynamic, sqrt-product, min, log-sum, or norm-product",
     )
     parser.add_argument(
         "--cascade-threshold",
@@ -156,7 +155,6 @@ def main() -> int:
         "max_new_tokens": args.max_new_tokens,
         "temperature": args.temperature,
         "top_k": args.top_k,
-        "threshold": args.threshold,
         "ouro_weight": args.ouro_weight,
         "local": args.local,
         "model": args.model,
