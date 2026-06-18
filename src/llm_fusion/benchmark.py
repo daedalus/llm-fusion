@@ -136,6 +136,105 @@ ROBUSTNESS_BATTERY: list[dict[str, str]] = [
     {"prompt": "", "category": "edge", "subdomain": "empty"},
     {"prompt": "a", "category": "edge", "subdomain": "minimal"},
     {"prompt": "???", "category": "edge", "subdomain": "punctuation"},
+    # Complex coding
+    {
+        "prompt": "def fibonacci(n):\n    if n <= 1:\n        return n\n    return ",
+        "category": "code",
+        "subdomain": "python_recursive",
+    },
+    {
+        "prompt": "class LinkedList:\n    def __init__(self):\n        self.head = None\n\n    def append(self, value):\n        new_node = ",
+        "category": "code",
+        "subdomain": "python_data_structure",
+    },
+    {
+        "prompt": "def merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    mid = ",
+        "category": "code",
+        "subdomain": "python_algorithm",
+    },
+    {
+        "prompt": "CREATE TABLE users (\n    id INTEGER PRIMARY KEY,\n    name VARCHAR(100) NOT NULL,\n    email ",
+        "category": "code",
+        "subdomain": "sql_ddl",
+    },
+    {
+        "prompt": "async function fetchUserData(userId) {\n    const response = await fetch(",
+        "category": "code",
+        "subdomain": "javascript_async",
+    },
+    {
+        "prompt": "def binary_search(arr, target):\n    left, right = 0, len(arr) - 1\n    while ",
+        "category": "code",
+        "subdomain": "python_search",
+    },
+    # Complex math
+    {
+        "prompt": "The integral of x^2 dx is",
+        "category": "math",
+        "subdomain": "calculus_integration",
+    },
+    {
+        "prompt": "The eigenvalues of the matrix [[2, 1], [1, 2]] are",
+        "category": "math",
+        "subdomain": "linear_algebra",
+    },
+    {
+        "prompt": "Using the quadratic formula for x^2 - 5x + 6 = 0, the solutions are",
+        "category": "math",
+        "subdomain": "quadratic",
+    },
+    {
+        "prompt": "The limit of sin(x)/x as x approaches 0 is",
+        "category": "math",
+        "subdomain": "limits",
+    },
+    {
+        "prompt": "The determinant of the matrix [[1, 2], [3, 4]] is",
+        "category": "math",
+        "subdomain": "determinant",
+    },
+    # Complex reasoning
+    {
+        "prompt": "Write a Python function that checks if a string is a palindrome:\ndef is_palindrome(s):\n    ",
+        "category": "code",
+        "subdomain": "python_string",
+    },
+    {
+        "prompt": "Explain the difference between a stack and a queue. A stack is",
+        "category": "reasoning",
+        "subdomain": "data_structures",
+    },
+    {
+        "prompt": "What are the time complexities of bubble sort, merge sort, and quicksort? Bubble sort is",
+        "category": "reasoning",
+        "subdomain": "algorithm_analysis",
+    },
+    {
+        "prompt": "Write a SQL query to find all users who signed up in the last 30 days:\nSELECT * FROM users WHERE ",
+        "category": "code",
+        "subdomain": "sql_query",
+    },
+    {
+        "prompt": "The three main principles of object-oriented programming are encapsulation, inheritance, and",
+        "category": "technical",
+        "subdomain": "oop",
+    },
+    # Multi-step problems
+    {
+        "prompt": "Solve for x: 2x + 5 = 13. First, subtract 5 from both sides to get 2x = ",
+        "category": "math",
+        "subdomain": "algebra_steps",
+    },
+    {
+        "prompt": "To deploy a Flask app to production, you would first ",
+        "category": "technical",
+        "subdomain": "deployment",
+    },
+    {
+        "prompt": "The time complexity of building a heap from an unsorted array is O(",
+        "category": "technical",
+        "subdomain": "complexity",
+    },
 ]
 
 
@@ -343,7 +442,7 @@ def run_benchmark(
 
     import torch
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k, softmax_top_k_torch
-    from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID
+    from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID, apply_repetition_penalty
     from llm_fusion.metrics import fusion_gain as _calc_gain
     from llm_fusion.metrics import parent_prob_for_token
 
@@ -408,6 +507,11 @@ def run_benchmark(
                 ouro_logits_t = ouro_out.logits[0, -1, :]
                 if step == 0:
                     ouro_cache = ouro_out.past_key_values
+                if repetition_penalty != 1.0:
+                    ouro_logits_t = torch.tensor(
+                        apply_repetition_penalty(ouro_logits_t.tolist(), ouro_gen_ids, repetition_penalty),
+                        device=device,
+                    )
 
             if model in ("fused", "hrm"):
                 with torch.no_grad():
@@ -432,6 +536,11 @@ def run_benchmark(
                 hrm_logits_t = hrm_out.logits[0, -1, :]
                 if step == 0:
                     hrm_cache = hrm_out.past_key_values
+                if repetition_penalty != 1.0:
+                    hrm_logits_t = torch.tensor(
+                        apply_repetition_penalty(hrm_logits_t.tolist(), hrm_gen_ids, repetition_penalty),
+                        device=device,
+                    )
 
             if model == "fused":
                 ouro_topk_vals, ouro_topk_ids_t = torch.topk(ouro_logits_t, top_k)
