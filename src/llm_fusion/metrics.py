@@ -40,6 +40,114 @@ def parent_prob_for_token(
     return 0.0
 
 
+def topk_accuracy(
+    logits: list[float],
+    target_tid: int,
+    k: int,
+) -> bool:
+    """Is the target token in the top-k candidates?"""
+    from llm_fusion.fusion import softmax_top_k
+
+    ids, _ = softmax_top_k(logits, k)
+    return target_tid in ids
+
+
+def agreement_rate(
+    ouro_logits: list[float],
+    hrm_logits: list[float],
+    k: int = 1,
+) -> bool:
+    """Do both models agree on the top-1 token?"""
+    from llm_fusion.fusion import softmax_top_k
+
+    ouro_ids, _ = softmax_top_k(ouro_logits, k)
+    hrm_ids, _ = softmax_top_k(hrm_logits, k)
+    if not ouro_ids or not hrm_ids:
+        return False
+    return ouro_ids[0] == hrm_ids[0]
+
+
+def top1_accuracy(
+    logits: list[float],
+    target_tid: int,
+) -> bool:
+    """Does the model's greedy top-1 pick match the target?"""
+    if not logits:
+        return False
+    return max(range(len(logits)), key=lambda i: logits[i]) == target_tid
+
+
+def fusion_regret(
+    fused_prob: float,
+    ouro_prob: float,
+    hrm_prob: float,
+) -> float:
+    """How much fusion hurts vs the better parent (positive = worse).
+
+    regret = max(log P_ouro, log P_hrm) - log P_fused
+    """
+    best_parent = max(ouro_prob, hrm_prob)
+    if best_parent <= 0 or fused_prob <= 0:
+        return 0.0
+    return math.log(best_parent) - math.log(fused_prob)
+
+
+def contribution_ratio(
+    fused_prob_per_token: dict[int, float],
+    matched_ouro_prob_per_token: dict[int, float],
+) -> float:
+    """Fraction of fused probability mass that came from Ouro (0=all HRM, 1=all Ouro)."""
+    total_fused = sum(fused_prob_per_token.values())
+    if total_fused <= 0:
+        return 0.5
+    total_ouro = sum(matched_ouro_prob_per_token.get(tid, 0.0) for tid in fused_prob_per_token)
+    return total_ouro / total_fused
+
+
+def entropy_delta(
+    fused_entropy: float,
+    ouro_entropy: float,
+    hrm_entropy: float,
+) -> float:
+    """Fused entropy minus average parent entropy. Negative = fusion concentrates."""
+    return fused_entropy - 0.5 * (ouro_entropy + hrm_entropy)
+
+
+def compute_entropy(probs: list[float]) -> float:
+    """Shannon entropy of a probability distribution."""
+    return -sum(p * math.log(max(p, 1e-10)) for p in probs if p > 0)
+
+
+def calibration_error(
+    predicted_probs: list[float],
+    outcomes: list[bool],
+    n_bins: int = 10,
+) -> float:
+    """Expected Calibration Error — gap between predicted confidence and observed accuracy."""
+    if not predicted_probs:
+        return 0.0
+    bins: list[list[tuple[float, bool]]] = [[] for _ in range(n_bins)]
+    for p, o in zip(predicted_probs, outcomes):
+        idx = min(int(p * n_bins), n_bins - 1)
+        bins[idx].append((p, o))
+    ece = 0.0
+    total = len(predicted_probs)
+    for bin_items in bins:
+        if not bin_items:
+            continue
+        avg_p = sum(p for p, _ in bin_items) / len(bin_items)
+        avg_o = sum(1.0 for _, o in bin_items if o) / len(bin_items)
+        ece += len(bin_items) / total * abs(avg_p - avg_o)
+    return ece
+
+
+def token_diversity(token_ids: list[int]) -> float:
+    """Fraction of unique tokens in a sequence (1.0 = all unique, low = repetitive)."""
+    if not token_ids:
+        return 0.0
+    return len(set(token_ids)) / len(token_ids)
+
+
 def compare_distributions(
     ouro_logits: list[float],
     hrm_logits: list[float],
@@ -96,6 +204,18 @@ def evaluate_text(
     fusion_wins = 0.0
     n_tokens = 0.0
 
+    topk_ouro = 0.0
+    topk_hrm = 0.0
+    topk_fused = 0.0
+    agree_count = 0.0
+    regret_sum = 0.0
+    top1_ouro = 0.0
+    top1_hrm = 0.0
+    top1_fused = 0.0
+    probs_for_cal = []
+    outcomes_for_cal = []
+    per_position_ppl = []
+
     seq = hrm_ids[:max_tokens] if len(hrm_ids) > max_tokens else hrm_ids
 
     for t in range(1, len(seq)):
@@ -146,6 +266,19 @@ def evaluate_text(
         if fused_prob > max(ouro_prob, hrm_prob):
             fusion_wins += 1
 
+        topk_ouro += topk_accuracy(ouro_logits, target_tid, 10)
+        topk_hrm += topk_accuracy(hrm_logits, target_tid, 10)
+        topk_fused += fused_prob > 0
+        agree_count += agreement_rate(ouro_logits, hrm_logits)
+        top1_ouro += top1_accuracy(ouro_logits, target_tid)
+        top1_hrm += top1_accuracy(hrm_logits, target_tid)
+        top1_fused += fused_prob == max(p for _, p, _ in candidates) if candidates else False
+        regret_sum += fusion_regret(fused_prob, ouro_prob, hrm_prob)
+
+        probs_for_cal.append(fused_prob)
+        outcomes_for_cal.append(fused_prob > 0)
+        per_position_ppl.append(math.exp(-math.log(max(fused_prob, 1e-10))))
+
     avg_gain = total_gain / max(n_tokens, 1)
     ouro_ppl = math.exp(-total_ouro_logprob / max(n_tokens, 1))
     hrm_ppl = math.exp(-total_hrm_logprob / max(n_tokens, 1))
@@ -163,4 +296,14 @@ def evaluate_text(
         "fused_ppl": fused_ppl,
         "ppl_improvement_vs_ouro": (ouro_ppl - fused_ppl) / ouro_ppl * 100,
         "ppl_improvement_vs_hrm": (hrm_ppl - fused_ppl) / hrm_ppl * 100,
+        "top10_accuracy_ouro": topk_ouro / max(n_tokens, 1),
+        "top10_accuracy_hrm": topk_hrm / max(n_tokens, 1),
+        "top10_accuracy_fused": topk_fused / max(n_tokens, 1),
+        "top1_accuracy_ouro": top1_ouro / max(n_tokens, 1),
+        "top1_accuracy_hrm": top1_hrm / max(n_tokens, 1),
+        "top1_accuracy_fused": top1_fused / max(n_tokens, 1),
+        "agreement_rate": agree_count / max(n_tokens, 1),
+        "avg_fusion_regret": regret_sum / max(n_tokens, 1),
+        "calibration_error": calibration_error(probs_for_cal, outcomes_for_cal),
+        "per_position_ppl": per_position_ppl,
     }

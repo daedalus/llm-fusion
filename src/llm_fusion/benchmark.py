@@ -290,8 +290,20 @@ class BenchmarkResult:
     avg_fusion_gain: float = 0.0
     oracle_rate: float = 0.0
     fused_entropy: float = 0.0
+    entropy_delta: float = 0.0
     ouro_tokens_used: int = 0
     hrm_tokens_used: int = 0
+    agreement_rate: float = 0.0
+    top1_accuracy_ouro: float = 0.0
+    top1_accuracy_hrm: float = 0.0
+    top1_accuracy_fused: float = 0.0
+    top10_accuracy_ouro: float = 0.0
+    top10_accuracy_hrm: float = 0.0
+    top10_accuracy_fused: float = 0.0
+    avg_fusion_regret: float = 0.0
+    contribution_ratio: float = 0.0
+    calibration_error: float = 0.0
+    token_diversity: float = 0.0
     prompt: str = ""
     completion: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
@@ -405,6 +417,10 @@ def run_benchmark(
             {"model": "fused", "strategy": "hybrid"},
             {"model": "fused", "strategy": "slerp"},
             {"model": "fused", "strategy": "simple"},
+            {"model": "fused", "strategy": "sqrt-product"},
+            {"model": "fused", "strategy": "min"},
+            {"model": "fused", "strategy": "log-sum"},
+            {"model": "fused", "strategy": "norm-product"},
         ]
 
     if bench_cache is not None:
@@ -524,6 +540,18 @@ def run_benchmark(
         oracle_matches = 0
         total_entropy = 0.0
         n_kl_steps = 0
+        agree_steps = 0
+        top1_ouro_hits = 0
+        top1_hrm_hits = 0
+        top1_fused_hits = 0
+        top10_ouro_hits = 0
+        top10_hrm_hits = 0
+        top10_fused_hits = 0
+        regret_sum = 0.0
+        ouro_contrib_sum = 0.0
+        cal_probs = []
+        cal_outcomes = []
+        gen_token_ids = []
         ouro_tokens_used = 0
         hrm_tokens_used = 0
         ttft = 0.0
@@ -708,6 +736,30 @@ def run_benchmark(
                 else:
                     ouro_tokens_used += 1
                     hrm_tokens_used += 1
+
+                agree_steps += agreement_rate(ouro_logits_list, hrm_logits_list)
+
+                hrm_top1 = max(range(len(hrm_logits_list)), key=lambda i: hrm_logits_list[i])
+                top1_hrm_hits += int(hrm_top1 == hrm_tid)
+                top1_ouro_hits += int(ouro_p > hrm_p)
+                top1_fused_hits += int(prob > max(ouro_p, hrm_p))
+
+                top10_ouro_hits += int(ouro_p > 0)
+                top10_hrm_hits += int(hrm_p > 0)
+                top10_fused_hits += int(prob > 0)
+
+                best_parent_p = max(ouro_p, hrm_p)
+                if best_parent_p > 0 and prob > 0:
+                    regret_sum += math.log(best_parent_p) - math.log(prob)
+
+                ouro_contrib = ouro_p
+                total_contrib = ouro_p + hrm_p
+                if total_contrib > 0:
+                    ouro_contrib_sum += ouro_contrib / total_contrib
+
+                cal_probs.append(prob)
+                cal_outcomes.append(prob > 0)
+                gen_token_ids.append(hrm_tid)
             elif model == "ouro":
                 from llm_fusion.generate import sample_from_logits
 
@@ -760,6 +812,21 @@ def run_benchmark(
             r.fusion_win_rate = fusion_wins / n_kl_steps
             r.oracle_rate = oracle_matches / n_kl_steps
             r.fused_entropy = total_entropy / n_kl_steps
+            r.agreement_rate = agree_steps / n_kl_steps
+            r.top1_accuracy_ouro = top1_ouro_hits / n_kl_steps
+            r.top1_accuracy_hrm = top1_hrm_hits / n_kl_steps
+            r.top1_accuracy_fused = top1_fused_hits / n_kl_steps
+            r.top10_accuracy_ouro = top10_ouro_hits / n_kl_steps
+            r.top10_accuracy_hrm = top10_hrm_hits / n_kl_steps
+            r.top10_accuracy_fused = top10_fused_hits / n_kl_steps
+            r.avg_fusion_regret = regret_sum / n_kl_steps
+            r.contribution_ratio = ouro_contrib_sum / n_kl_steps
+            r.calibration_error = calibration_error(cal_probs, cal_outcomes)
+            r.entropy_delta = r.fused_entropy - 0.5 * (
+                -sum(p * math.log(max(p, 1e-10)) for p in ouro_probs)
+                + -sum(p * math.log(max(p, 1e-10)) for p in hrm_probs)
+            )
+            r.token_diversity = token_diversity(gen_token_ids)
         r.ouro_tokens_used = ouro_tokens_used
         r.hrm_tokens_used = hrm_tokens_used
         results.append(r)
@@ -798,6 +865,22 @@ def run_benchmark(
                 stats.append(f"oracle={r.oracle_rate:.0%}")
             if r.fused_entropy > 0:
                 stats.append(f"entropy={r.fused_entropy:.2f}")
+            if r.agreement_rate > 0:
+                stats.append(f"agree={r.agreement_rate:.0%}")
+            if r.top1_accuracy_fused > 0:
+                stats.append(f"top1={r.top1_accuracy_fused:.0%}")
+            if r.top10_accuracy_fused > 0:
+                stats.append(f"top10={r.top10_accuracy_fused:.0%}")
+            if r.avg_fusion_regret > 0:
+                stats.append(f"regret={r.avg_fusion_regret:.3f}")
+            if r.contribution_ratio != 0.5:
+                stats.append(f"ouro%={r.contribution_ratio:.0%}")
+            if r.calibration_error > 0:
+                stats.append(f"cal_err={r.calibration_error:.3f}")
+            if r.entropy_delta != 0:
+                stats.append(f"ent_delta={r.entropy_delta:+.2f}")
+            if r.token_diversity > 0:
+                stats.append(f"diversity={r.token_diversity:.2f}")
             if stats:
                 print(f"    stats:      {' | '.join(stats)}", file=sys.stderr)
 
@@ -810,15 +893,18 @@ def run_benchmark(
 def format_table(results: list[BenchmarkResult], show_completions: bool = False) -> str:
     lines = []
     lines.append(
-        f"{'Config':30s}  {'Decode':>8s}  {'Gen':>8s}  {'FusedPPL':>9s}  {'KL(o>h)':>8s}  {'JSD':>6s}  {'WinRate':>8s}  {'Gain':>8s}  {'Oracle':>8s}  {'Entropy':>8s}  {'OuroTok':>8s}  {'HrmTok':>8s}"
+        f"{'Config':30s}  {'Decode':>8s}  {'Gen':>8s}  {'FusedPPL':>9s}  {'KL(o>h)':>8s}  {'JSD':>6s}  "
+        f"{'WinRate':>8s}  {'Gain':>8s}  {'Oracle':>8s}  {'Entropy':>8s}  "
+        f"{'Agree':>6s}  {'Top1':>6s}  {'Top10':>6s}  {'Regret':>7s}  {'Ouro%':>6s}  {'CalErr':>7s}  {'EntDlt':>7s}  {'Diversity':>9s}  {'OuroTok':>8s}  {'HrmTok':>8s}"
     )
-    lines.append("-" * 143)
+    lines.append("-" * 210)
     for r in results:
         label = f"{r.model}/{r.strategy}"
         lines.append(
             f"{label:30s}  {r.decoding_tps:7.1f}  {r.generation_tps:7.1f}  "
             f"{r.fused_ppl:9.1f}  {r.avg_kl_oh:8.3f}  {r.avg_jsd:6.3f}  "
-            f"{r.fusion_win_rate:7.1%}  {r.avg_fusion_gain:+7.3f}  {r.oracle_rate:7.1%}  {r.fused_entropy:8.1f}  {r.ouro_tokens_used:8d}  {r.hrm_tokens_used:8d}"
+            f"{r.fusion_win_rate:7.1%}  {r.avg_fusion_gain:+7.3f}  {r.oracle_rate:7.1%}  {r.fused_entropy:8.1f}  "
+            f"{r.agreement_rate:5.0%}  {r.top1_accuracy_fused:5.0%}  {r.top10_accuracy_fused:5.0%}  {r.avg_fusion_regret:7.3f}  {r.contribution_ratio:5.0%}  {r.calibration_error:7.3f}  {r.entropy_delta:+7.2f}  {r.token_diversity:9.2f}  {r.ouro_tokens_used:8d}  {r.hrm_tokens_used:8d}"
         )
         if show_completions and r.prompt:
             prompt_short = r.prompt.replace("\n", "\\n")
@@ -876,10 +962,9 @@ def run_robustness_benchmark(
     from transformers import AutoConfig, AutoModelForCausalLM
 
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k
-    from llm_fusion.generate import format_hrm_prompt
-    from llm_fusion.loader import patch_ouro_model
+    from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID, apply_repetition_penalty
     from llm_fusion.metrics import fusion_gain as _calc_gain
-    from llm_fusion.metrics import parent_prob_for_token
+    from llm_fusion.metrics import parent_prob_for_token, topk_accuracy, agreement_rate, calibration_error, token_diversity
     from llm_fusion.token_matcher import TokenMatcher
 
     bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
@@ -1083,14 +1168,21 @@ def run_graph_benchmark(
     import matplotlib.pyplot as plt
 
     token_counts = [10, 30, 50]
-    strategies = ["average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "slerp", "simple"]
-    metrics = ["fusion_win_rate", "avg_fusion_gain", "avg_kl_oh", "avg_jsd", "fused_entropy"]
+    strategies = ["average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid", "slerp", "simple", "sqrt-product", "min", "log-sum", "norm-product"]
+    metrics = ["fusion_win_rate", "avg_fusion_gain", "avg_kl_oh", "avg_jsd", "fused_entropy", "agreement_rate", "top1_accuracy_fused", "top10_accuracy_fused", "avg_fusion_regret", "contribution_ratio", "calibration_error", "entropy_delta"]
     metric_labels = {
         "fusion_win_rate": "Win Rate",
         "avg_fusion_gain": "Fusion Gain",
         "avg_kl_oh": "KL(O||H)",
         "avg_jsd": "JSD",
         "fused_entropy": "Entropy",
+        "agreement_rate": "Agreement",
+        "top1_accuracy_fused": "Top-1 Acc",
+        "top10_accuracy_fused": "Top-10 Acc",
+        "avg_fusion_regret": "Regret",
+        "contribution_ratio": "Ouro Contribution",
+        "calibration_error": "Calibration Err",
+        "entropy_delta": "Entropy Delta",
     }
 
     all_results: dict[int, list[BenchmarkResult]] = {}
