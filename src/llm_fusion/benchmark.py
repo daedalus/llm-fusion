@@ -163,6 +163,8 @@ class BenchmarkResult:
     fused_entropy: float = 0.0
     ouro_tokens_used: int = 0
     hrm_tokens_used: int = 0
+    prompt: str = ""
+    completion: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -524,6 +526,8 @@ def run_benchmark(
         r.decoding_tps = (step + 1) / decode_time
         r.generation_tps = (r.prompt_tokens + step + 1) / max(total, 1e-10)
         r.memory_mb = maybe_get_memory_mb()
+        r.prompt = text
+        r.completion = generated_text
         if model in ("ouro", "fused"):
             r.ouro_ppl = _quick_ppl(text, ouro_model, ouro_tok, device)
         if model in ("hrm", "fused"):
@@ -557,7 +561,7 @@ def run_benchmark(
     return results
 
 
-def format_table(results: list[BenchmarkResult]) -> str:
+def format_table(results: list[BenchmarkResult], show_completions: bool = False) -> str:
     lines = []
     lines.append(
         f"{'Config':30s}  {'Decode':>8s}  {'Gen':>8s}  {'FusedPPL':>9s}  {'KL(o>h)':>8s}  {'JSD':>6s}  {'WinRate':>8s}  {'Gain':>8s}  {'Oracle':>8s}  {'Entropy':>8s}  {'OuroTok':>8s}  {'HrmTok':>8s}"
@@ -570,6 +574,11 @@ def format_table(results: list[BenchmarkResult]) -> str:
             f"{r.fused_ppl:9.1f}  {r.avg_kl_oh:8.3f}  {r.avg_jsd:6.3f}  "
             f"{r.fusion_win_rate:7.1%}  {r.avg_fusion_gain:+7.3f}  {r.oracle_rate:7.1%}  {r.fused_entropy:8.1f}  {r.ouro_tokens_used:8d}  {r.hrm_tokens_used:8d}"
         )
+        if show_completions and r.prompt:
+            prompt_short = r.prompt.replace("\n", "\\n")
+            completion_short = r.completion.replace("\n", "\\n") if r.completion else ""
+            lines.append(f"  prompt:     {prompt_short}")
+            lines.append(f"  completion: {completion_short}")
     return "\n".join(lines)
 
 
@@ -909,6 +918,11 @@ def main() -> None:
         action="store_true",
         help="Run on single prompt only (default: run all prompts and average)",
     )
+    parser.add_argument(
+        "--show-completions",
+        action="store_true",
+        help="Show prompt and completion text for each (prompt, strategy) pair",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--debug", action="store_true", help="Debug output")
     parser.add_argument(
@@ -971,7 +985,7 @@ def main() -> None:
                 loaded=loaded,
             )
             tag = "speed"
-            print("\n" + format_table(results))
+            print("\n" + format_table(results, show_completions=args.show_completions))
         else:
             prompts = [b["prompt"] for b in ROBUSTNESS_BATTERY]
             print(f"Running benchmark on {len(prompts)} prompts...", file=sys.stderr)
@@ -1017,7 +1031,7 @@ def main() -> None:
 
         tag = "speed_full"
         print(f"\nAveraged across {len(prompts)} prompts:\n")
-        print(format_table(averaged))
+        print(format_table(averaged, show_completions=args.show_completions))
         results = averaged
 
     if args.save:
