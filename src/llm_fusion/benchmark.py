@@ -258,6 +258,7 @@ def run_benchmark(
     cache: bool = False,
     device: str = "auto",
     loaded: LoadedModels | None = None,
+    show_completions: bool = False,
 ) -> list[BenchmarkResult]:
     if configs is None:
         configs = [
@@ -554,6 +555,11 @@ def run_benchmark(
             f"TTFT={r.ttft_s * 1000:.0f}ms  mem={r.memory_mb:.0f}MB",
             file=sys.stderr,
         )
+        if show_completions and r.prompt:
+            prompt_short = r.prompt.replace("\n", "\\n")
+            completion_short = r.completion.replace("\n", "\\n") if r.completion else ""
+            print(f"    prompt:     {prompt_short}", file=sys.stderr)
+            print(f"    completion: {completion_short}", file=sys.stderr)
 
     if cache:
         _save_cache(ck, "speed", results)
@@ -983,6 +989,7 @@ def main() -> None:
                 cache=args.benchmark_cache,
                 device=args.device,
                 loaded=loaded,
+                show_completions=args.show_completions,
             )
             tag = "speed"
             print("\n" + format_table(results, show_completions=args.show_completions))
@@ -999,6 +1006,7 @@ def main() -> None:
                     cache=args.benchmark_cache,
                     device=args.device,
                     loaded=loaded,
+                    show_completions=args.show_completions,
                 )
                 for r in bench_results:
                     key = f"{r.model}/{r.strategy}"
