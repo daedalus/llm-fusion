@@ -73,8 +73,8 @@ class Fuser:
         top_k: int = 50,
         strategy: str = "dynamic",
         cascade_threshold: float = 0.5,
-        dynamic_initial_weight: float = 0.8,
-        dynamic_final_weight: float = 0.2,
+        dynamic_initial_weight: float = 0.6,
+        dynamic_final_weight: float = 0.4,
         dynamic_total_steps: int = 100,
     ) -> None:
         self.matcher = matcher

@@ -73,14 +73,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dynamic-initial-weight",
         type=float,
-        default=0.8,
-        help="Starting Ouro weight for dynamic strategy (default: 0.8)",
+        default=0.6,
+        help="Starting Ouro weight for dynamic strategy (default: 0.6)",
     )
     parser.add_argument(
         "--dynamic-final-weight",
         type=float,
-        default=0.2,
-        help="Final Ouro weight for dynamic strategy (default: 0.2)",
+        default=0.4,
+        help="Final Ouro weight for dynamic strategy (default: 0.4)",
     )
     parser.add_argument(
         "--perplexity",
