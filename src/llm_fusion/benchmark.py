@@ -389,6 +389,7 @@ def run_benchmark(
     show_completions: bool = False,
     bench_cache: BenchmarkCache | None = None,
     seed: int | None = None,
+    parallel: bool = False,
 ) -> list[BenchmarkResult]:
     if configs is None:
         configs = [
@@ -532,8 +533,62 @@ def run_benchmark(
         _single_token = torch.tensor([[0]], device=device, dtype=torch.long)
         _hrm_tti_1 = torch.ones(1, dtype=torch.long, device=device).unsqueeze(0)
 
+        _ouro_input = torch.tensor([[0]], device=device, dtype=torch.long)
+        _hrm_input = torch.tensor([[0]], device=device, dtype=torch.long)
+        _hrm_tti_parallel = torch.ones(1, dtype=torch.long, device=device).unsqueeze(0)
+
+        _pool = None
+        if parallel and model == "fused":
+            from concurrent.futures import ThreadPoolExecutor
+            _pool = ThreadPoolExecutor(max_workers=2)
+
         for step in range(max_new_tokens):
-            if model in ("fused", "ouro"):
+            if _pool is not None:
+                def _ouro_fwd(_ids=ouro_ids, _cache=ouro_cache, _step=step):
+                    with torch.no_grad():
+                        kw: dict[str, Any] = {}
+                        if _step > 0 and _cache is not None:
+                            kw["past_key_values"] = _cache
+                            kw["use_cache"] = True
+                            _ouro_input[0] = _ids[0]
+                            return ouro_model(input_ids=_ouro_input, **kw)
+                        return ouro_model(input_ids=torch.tensor([_ids], device=device), **kw)
+
+                def _hrm_fwd(_ids=hrm_ids_list, _cache=hrm_cache, _step=step):
+                    with torch.no_grad():
+                        kw: dict[str, Any] = {}
+                        if _step > 0 and _cache is not None:
+                            kw["past_key_values"] = _cache
+                            kw["use_cache"] = True
+                            _hrm_input[0] = _ids[0]
+                            return hrm_model(input_ids=_hrm_input, token_type_ids=_hrm_tti_parallel, **kw)
+                        tti = torch.ones(len(_ids), dtype=torch.long, device=device).unsqueeze(0)
+                        return hrm_model(input_ids=torch.tensor([_ids], device=device), token_type_ids=tti, **kw)
+
+                f_ouro = _pool.submit(_ouro_fwd)
+                f_hrm = _pool.submit(_hrm_fwd)
+                ouro_out = f_ouro.result()
+                hrm_out = f_hrm.result()
+
+                ouro_logits_t = ouro_out.logits[0, -1, :]
+                if step == 0:
+                    ouro_cache = ouro_out.past_key_values
+                if repetition_penalty != 1.0:
+                    ouro_logits_t = torch.tensor(
+                        apply_repetition_penalty(ouro_logits_t.tolist(), ouro_gen_ids, repetition_penalty),
+                        device=device,
+                    )
+
+                hrm_logits_t = hrm_out.logits[0, -1, :]
+                if step == 0:
+                    hrm_cache = hrm_out.past_key_values
+                if repetition_penalty != 1.0:
+                    hrm_logits_t = torch.tensor(
+                        apply_repetition_penalty(hrm_logits_t.tolist(), hrm_gen_ids, repetition_penalty),
+                        device=device,
+                    )
+
+            elif model in ("fused", "ouro"):
                 with torch.no_grad():
                     ouro_kwargs: dict[str, Any] = {}
                     if step > 0 and ouro_cache is not None:
@@ -708,6 +763,9 @@ def run_benchmark(
         r.ouro_tokens_used = ouro_tokens_used
         r.hrm_tokens_used = hrm_tokens_used
         results.append(r)
+
+        if _pool is not None:
+            _pool.shutdown(wait=False)
 
         label = f"{model}/{strategy}"
         print(
@@ -1100,6 +1158,8 @@ def main() -> None:
                         help="Repetition penalty (>1.0 discourages repeats)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for deterministic generation (default: 42)")
+    parser.add_argument("--parallel", action="store_true",
+                        help="Run Ouro and HRM forward passes in parallel threads")
     parser.add_argument(
         "--robustness",
         action="store_true",
@@ -1179,6 +1239,7 @@ def main() -> None:
                 show_completions=args.show_completions,
                 bench_cache=bench_cache,
                 seed=args.seed,
+                parallel=args.parallel,
             )
             tag = "speed"
             print("\n" + format_table(results, show_completions=args.show_completions))
@@ -1198,6 +1259,7 @@ def main() -> None:
                     show_completions=args.show_completions,
                     bench_cache=bench_cache,
                     seed=args.seed,
+                    parallel=args.parallel,
                 )
                 for r in bench_results:
                     key = f"{r.model}/{r.strategy}"

@@ -177,6 +177,7 @@ def generate(
     ouro_path: str = "ByteDance/Ouro-1.4B",
     hrm_path: str = "sapientinc/HRM-Text-1B",
     base_dir: str | Path = "",
+    parallel: bool = False,
 ) -> None:
     try:
         import torch
@@ -354,57 +355,109 @@ def generate(
     _single_token = torch.tensor([[0]], device=device, dtype=torch.long) if (load_ouro or load_hrm) else None
     _hrm_tti_1 = torch.ones(1, dtype=torch.long, device=device).unsqueeze(0) if load_hrm else None
 
+    _ouro_input = torch.tensor([[0]], device=device, dtype=torch.long) if load_ouro else None
+    _hrm_input = torch.tensor([[0]], device=device, dtype=torch.long) if load_hrm else None
+    _hrm_tti_parallel = torch.ones(1, dtype=torch.long, device=device).unsqueeze(0) if load_hrm else None
+
+    _pool = None
+    if parallel and model == "fused":
+        from concurrent.futures import ThreadPoolExecutor
+        _pool = ThreadPoolExecutor(max_workers=2)
+
     for step in range(max_new_tokens):
         log.debug("Step %d, generated_text length %d, generated_text=%s", step, len(generated_text), repr(generated_text[-40:]))
-        if load_ouro:
-            with torch.no_grad():
-                ouro_kwargs = {}
-                if step > 0 and ouro_cache is not None:
-                    ouro_kwargs["past_key_values"] = ouro_cache
-                    ouro_kwargs["use_cache"] = True
-                    _single_token[0] = ouro_ids[0]
-                    ouro_out = ouro_model(
-                        input_ids=_single_token,
-                        **ouro_kwargs,
-                    )
-                else:
-                    ouro_out = ouro_model(
-                        input_ids=torch.tensor([ouro_ids], device=device),
-                        **ouro_kwargs,
-                    )
+
+        if _pool is not None:
+            def _ouro_fwd(_ids=ouro_ids, _cache=ouro_cache, _step=step):
+                with torch.no_grad():
+                    kw = {}
+                    if _step > 0 and _cache is not None:
+                        kw["past_key_values"] = _cache
+                        kw["use_cache"] = True
+                        _ouro_input[0] = _ids[0]
+                        return ouro_model(input_ids=_ouro_input, **kw)
+                    return ouro_model(input_ids=torch.tensor([_ids], device=device), **kw)
+
+            def _hrm_fwd(_ids=hrm_ids_list, _cache=hrm_cache, _step=step):
+                with torch.no_grad():
+                    kw = {}
+                    if _step > 0 and _cache is not None:
+                        kw["past_key_values"] = _cache
+                        kw["use_cache"] = True
+                        _hrm_input[0] = _ids[0]
+                        return hrm_model(input_ids=_hrm_input, token_type_ids=_hrm_tti_parallel, **kw)
+                    tti = torch.ones(len(_ids), dtype=torch.long, device=device).unsqueeze(0)
+                    return hrm_model(input_ids=torch.tensor([_ids], device=device), token_type_ids=tti, **kw)
+
+            f_ouro = _pool.submit(_ouro_fwd)
+            f_hrm = _pool.submit(_hrm_fwd)
+            ouro_out = f_ouro.result()
+            hrm_out = f_hrm.result()
+
             ouro_logits_t = ouro_out.logits[0, -1, :]
             if step == 0 and use_ouro_cache:
                 ouro_cache = ouro_out.past_key_values
             ouro_logits = ouro_logits_t.tolist()
             if repetition_penalty != 1.0:
-                ouro_logits = apply_repetition_penalty(
-                    ouro_logits, ouro_gen_ids, repetition_penalty
-                )
+                ouro_logits = apply_repetition_penalty(ouro_logits, ouro_gen_ids, repetition_penalty)
 
-        if load_hrm:
-            with torch.no_grad():
-                hrm_kwargs = {}
-                if step > 0 and hrm_cache is not None:
-                    hrm_kwargs["past_key_values"] = hrm_cache
-                    hrm_kwargs["use_cache"] = True
-                    _single_token[0] = hrm_ids_list[0]
-                    hrm_out = hrm_model(
-                        input_ids=_single_token,
-                        token_type_ids=_hrm_tti_1,
-                        **hrm_kwargs,
-                    )
-                else:
-                    hrm_tti = torch.ones(len(hrm_ids_list), dtype=torch.long, device=device).unsqueeze(0)
-                    hrm_out = hrm_model(
-                        input_ids=torch.tensor([hrm_ids_list], device=device),
-                        token_type_ids=hrm_tti,
-                    )
             hrm_logits_t = hrm_out.logits[0, -1, :]
             if step == 0 and use_hrm_cache:
                 hrm_cache = hrm_out.past_key_values
             hrm_logits = hrm_logits_t.tolist()
             if repetition_penalty != 1.0:
                 hrm_logits = apply_repetition_penalty(hrm_logits, hrm_gen_ids, repetition_penalty)
+
+        else:
+            if load_ouro:
+                with torch.no_grad():
+                    ouro_kwargs = {}
+                    if step > 0 and ouro_cache is not None:
+                        ouro_kwargs["past_key_values"] = ouro_cache
+                        ouro_kwargs["use_cache"] = True
+                        _single_token[0] = ouro_ids[0]
+                        ouro_out = ouro_model(
+                            input_ids=_single_token,
+                            **ouro_kwargs,
+                        )
+                    else:
+                        ouro_out = ouro_model(
+                            input_ids=torch.tensor([ouro_ids], device=device),
+                            **ouro_kwargs,
+                        )
+                ouro_logits_t = ouro_out.logits[0, -1, :]
+                if step == 0 and use_ouro_cache:
+                    ouro_cache = ouro_out.past_key_values
+                ouro_logits = ouro_logits_t.tolist()
+                if repetition_penalty != 1.0:
+                    ouro_logits = apply_repetition_penalty(
+                        ouro_logits, ouro_gen_ids, repetition_penalty
+                    )
+
+            if load_hrm:
+                with torch.no_grad():
+                    hrm_kwargs = {}
+                    if step > 0 and hrm_cache is not None:
+                        hrm_kwargs["past_key_values"] = hrm_cache
+                        hrm_kwargs["use_cache"] = True
+                        _single_token[0] = hrm_ids_list[0]
+                        hrm_out = hrm_model(
+                            input_ids=_single_token,
+                            token_type_ids=_hrm_tti_1,
+                            **hrm_kwargs,
+                        )
+                    else:
+                        hrm_tti = torch.ones(len(hrm_ids_list), dtype=torch.long, device=device).unsqueeze(0)
+                        hrm_out = hrm_model(
+                            input_ids=torch.tensor([hrm_ids_list], device=device),
+                            token_type_ids=hrm_tti,
+                        )
+                hrm_logits_t = hrm_out.logits[0, -1, :]
+                if step == 0 and use_hrm_cache:
+                    hrm_cache = hrm_out.past_key_values
+                hrm_logits = hrm_logits_t.tolist()
+                if repetition_penalty != 1.0:
+                    hrm_logits = apply_repetition_penalty(hrm_logits, hrm_gen_ids, repetition_penalty)
 
         if model == "fused":
             fuser.current_step = step
@@ -460,3 +513,6 @@ def generate(
     print("-" * 60)
     print(f"Generated {step + 1} tokens")
     log.info("Generated %d tokens with model=%s strategy=%s", step + 1, model, strategy)
+
+    if _pool is not None:
+        _pool.shutdown(wait=False)

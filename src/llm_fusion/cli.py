@@ -124,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Random seed for reproducible generation",
     )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Run Ouro and HRM forward passes in parallel threads",
+    )
     return parser
 
 
@@ -168,6 +173,7 @@ def main() -> int:
         "verbose": args.verbose,
         "debug": args.debug,
         "seed": args.seed,
+        "parallel": args.parallel,
     }
     generate(**gen_kwargs)
     return 0
