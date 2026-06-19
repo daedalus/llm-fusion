@@ -13,7 +13,6 @@ from tokenizers import Tokenizer
 
 from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k
 from llm_fusion.metrics import fusion_gain as _compute_gain
-from llm_fusion.token_matcher import TokenMatcher
 
 HRM_EOS_ID = 11
 OURO_EOS_ID = 0
@@ -95,7 +94,7 @@ def compute_perplexity(
     for start in range(0, seq_len - 1, stride):
         end = min(start + stride, seq_len)
         chunk = input_ids[max(0, start - 1) : end] if start > 0 else input_ids[:end]
-        inp = torch.tensor([chunk], device=device)
+        inp = torch.tensor([chunk], device=device, dtype=torch.long)
         with torch.no_grad():
             out = model(inp)
         logits = out.logits[0]
@@ -132,11 +131,11 @@ def compute_fused_perplexity(
     ouro_tok.encode(text).ids
     for t in range(1, len(hrm_ids)):
         ouro_prefix = ouro_tok.encode(hrm_tok.decode(hrm_ids[:t])).ids or [0]
-        inp = torch.tensor([ouro_prefix], device=device)
+        inp = torch.tensor([ouro_prefix], device=device, dtype=torch.long)
         with torch.no_grad():
             ouro_out = ouro_model(inp)
         ouro_logits = ouro_out.logits[0, -1, :].tolist()
-        hrm_inp = torch.tensor([hrm_ids[:t]], device=device)
+        hrm_inp = torch.tensor([hrm_ids[:t]], device=device, dtype=torch.long)
         hrm_tti = torch.ones(t, dtype=torch.long, device=device).unsqueeze(0)
         with torch.no_grad():
             hrm_out = hrm_model(hrm_inp, token_type_ids=hrm_tti)
@@ -180,16 +179,11 @@ def generate(
 ) -> None:
     try:
         import torch
-        from transformers import AutoConfig, AutoModelForCausalLM
     except ImportError as e:
         print(f"Error: requires torch and transformers ({e})", file=sys.stderr)
         sys.exit(1)
 
     rng = random.Random(seed)
-
-    bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
-    ouro_tok_path = bd / "Ouro-1.4B/tokenizer.json"
-    hrm_tok_path = bd / "HRM-Text-1B/tokenizer.json"
 
     log = logging.getLogger(__name__)
     if debug:
@@ -197,67 +191,43 @@ def generate(
     elif verbose:
         log.setLevel(logging.INFO)
 
-    log.info("Initializing token matcher from %s and %s", ouro_tok_path, hrm_tok_path)
-    matcher = TokenMatcher(ouro_tok_path, hrm_tok_path)
-    ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
-    hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
+    from llm_fusion.loader import load_all
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if device == "cpu" else torch.float16
+    loaded = load_all(
+        base_dir=base_dir,
+        ouro_path=ouro_path,
+        hrm_path=hrm_path,
+        model=model,
+        local=local,
+        verbose=verbose,
+        debug=debug,
+    )
+    matcher = loaded.matcher
+    ouro_tok = loaded.ouro_tok
+    hrm_tok = loaded.hrm_tok
+    ouro_model = loaded.ouro_model
+    hrm_model = loaded.hrm_model
+    device = loaded.device
     load_ouro = model in ("fused", "ouro")
     load_hrm = model in ("fused", "hrm")
 
-    log.info("Device: %s, dtype: %s", device, dtype)
-    log.debug("load_ouro=%s, load_hrm=%s", load_ouro, load_hrm)
-
-    print(f"Loading models on {device}...", file=sys.stderr)
-    if load_ouro:
-        if local:
-            ouro_model_path = str(bd / "Ouro-1.4B")
-        else:
-            ouro_model_path = ouro_path
-        log.info("Loading Ouro model from %s", ouro_model_path)
-        ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
-        patch_ouro_model(ouro_config)
-        log.debug("Ouro config._attn_implementation set to 'eager'")
-        ouro_model = AutoModelForCausalLM.from_pretrained(
-            ouro_model_path,
-            config=ouro_config,
-            torch_dtype=dtype,
-            device_map=device,
-            trust_remote_code=True,
-        )
-        log.info("Ouro model loaded")
-    if load_hrm:
-        if local:
-            hrm_model_path = str(bd / "HRM-Text-1B")
-        else:
-            hrm_model_path = hrm_path
-        log.info("Loading HRM model from %s", hrm_model_path)
-        hrm_model = AutoModelForCausalLM.from_pretrained(
-            hrm_model_path,
-            torch_dtype=dtype,
-            device_map=device,
-            attn_implementation="sdpa",
-        )
-        log.info("HRM model loaded")
+    fuser = Fuser(
+        matcher,
+        ouro_tok,
+        hrm_tok,
+        ouro_weight,
+        top_k,
+        strategy,
+        cascade_threshold,
+        dynamic_initial_weight,
+        dynamic_final_weight,
+        max_new_tokens,
+    )
 
     if perplexity:
         print(f"Computing perplexity for {model}...")
         print("-" * 60)
         if model == "fused":
-            fuser = Fuser(
-                matcher,
-                ouro_tok,
-                hrm_tok,
-                ouro_weight,
-                top_k,
-                strategy,
-                cascade_threshold,
-                dynamic_initial_weight,
-                dynamic_final_weight,
-                0,
-            )
             ppl = compute_fused_perplexity(
                 text, ouro_model, hrm_model, ouro_tok, hrm_tok, fuser, device
             )
@@ -298,18 +268,6 @@ def generate(
         print("-" * 60)
         return
 
-    fuser = Fuser(
-        matcher,
-        ouro_tok,
-        hrm_tok,
-        ouro_weight,
-        top_k,
-        strategy,
-        cascade_threshold,
-        dynamic_initial_weight,
-        dynamic_final_weight,
-        max_new_tokens,
-    )
     label = {"fused": "Fused", "ouro": "Ouro-1.4B", "hrm": "HRM-Text-1B"}[model]
     print(f"Model: {label}")
     if model == "fused":
@@ -373,7 +331,7 @@ def generate(
                         kw["use_cache"] = True
                         _ouro_input[0] = _ids[0]
                         return ouro_model(input_ids=_ouro_input, **kw)
-                    return ouro_model(input_ids=torch.tensor([_ids], device=device), **kw)
+                    return ouro_model(input_ids=torch.tensor([_ids], device=device, dtype=torch.long), **kw)
 
             def _hrm_fwd(_ids=hrm_ids_list, _cache=hrm_cache, _step=step):
                 with torch.no_grad():
@@ -384,7 +342,7 @@ def generate(
                         _hrm_input[0] = _ids[0]
                         return hrm_model(input_ids=_hrm_input, token_type_ids=_hrm_tti_parallel, **kw)
                     tti = torch.ones(len(_ids), dtype=torch.long, device=device).unsqueeze(0)
-                    return hrm_model(input_ids=torch.tensor([_ids], device=device), token_type_ids=tti, **kw)
+                    return hrm_model(input_ids=torch.tensor([_ids], device=device, dtype=torch.long), token_type_ids=tti, **kw)
 
             f_ouro = _pool.submit(_ouro_fwd)
             f_hrm = _pool.submit(_hrm_fwd)
@@ -419,7 +377,7 @@ def generate(
                         )
                     else:
                         ouro_out = ouro_model(
-                            input_ids=torch.tensor([ouro_ids], device=device),
+                            input_ids=torch.tensor([ouro_ids], device=device, dtype=torch.long),
                             **ouro_kwargs,
                         )
                 ouro_logits_t = ouro_out.logits[0, -1, :]
@@ -446,7 +404,7 @@ def generate(
                     else:
                         hrm_tti = torch.ones(len(hrm_ids_list), dtype=torch.long, device=device).unsqueeze(0)
                         hrm_out = hrm_model(
-                            input_ids=torch.tensor([hrm_ids_list], device=device),
+                            input_ids=torch.tensor([hrm_ids_list], device=device, dtype=torch.long),
                             token_type_ids=hrm_tti,
                         )
                 hrm_logits_t = hrm_out.logits[0, -1, :]
@@ -474,15 +432,15 @@ def generate(
                     print(f" [gain=+{gain:.3f}]", end="", flush=True)
                 else:
                     print(f" [gain={gain:.3f}]", end="", flush=True)
+            hrm_gen_ids.add(tid)
+            hrm_ids_list = [tid]
+            generated_text += token_str
             if strategy == "min-perplexity" and fuser.last_routed_model == "ouro":
                 ouro_ids = [tid]
                 ouro_gen_ids.add(tid)
                 eos_id = OURO_EOS_ID
             else:
-                hrm_ids_list = [tid]
-                hrm_match = fuser.matcher.hrm_to_ouro(tid)
-                ouro_ids = hrm_match.target_ids if hrm_match.target_ids else [OURO_EOS_ID]
-                hrm_gen_ids.add(tid)
+                ouro_ids = ouro_tok.encode(generated_text).ids or [OURO_EOS_ID]
                 ouro_gen_ids.update(ouro_ids)
                 eos_id = HRM_EOS_ID
         elif model == "ouro":
@@ -500,7 +458,8 @@ def generate(
             print(f"\n[EOS at step {step + 1}]")
             break
 
-        generated_text += token_str
+        if model != "fused":
+            generated_text += token_str
         if token_str:
             print(token_str, end="", flush=True)
         else:

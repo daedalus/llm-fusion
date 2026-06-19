@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -18,6 +19,18 @@ class CausalLM(Protocol):
 
 def patch_ouro_model(config: object) -> None:
     config._attn_implementation = "eager"  # type: ignore[attr-defined]
+
+
+@dataclass
+class LoadedModels:
+    """All loaded artifacts: models, tokenizers, matcher, device."""
+
+    ouro_model: CausalLM | None
+    hrm_model: CausalLM | None
+    ouro_tok: object
+    hrm_tok: object
+    matcher: object
+    device: str
 
 
 def load_models(
@@ -84,3 +97,45 @@ def load_models(
         log.info("HRM model loaded")
 
     return ouro_model, hrm_model, device
+
+
+def load_all(
+    base_dir: str | Path = "",
+    ouro_path: str = "ByteDance/Ouro-1.4B",
+    hrm_path: str = "sapientinc/HRM-Text-1B",
+    model: str = "fused",
+    local: bool = False,
+    verbose: bool = False,
+    debug: bool = False,
+) -> LoadedModels:
+    """Load models, tokenizers, and token matcher. Returns LoadedModels."""
+    from tokenizers import Tokenizer
+
+    from llm_fusion.token_matcher import TokenMatcher
+
+    bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
+    ouro_tok_path = bd / "Ouro-1.4B/tokenizer.json"
+    hrm_tok_path = bd / "HRM-Text-1B/tokenizer.json"
+
+    matcher = TokenMatcher(str(ouro_tok_path), str(hrm_tok_path))
+    ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
+    hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
+
+    ouro_model, hrm_model, device = load_models(
+        base_dir=base_dir,
+        ouro_path=ouro_path,
+        hrm_path=hrm_path,
+        model=model,
+        local=local,
+        verbose=verbose,
+        debug=debug,
+    )
+
+    return LoadedModels(
+        ouro_model=ouro_model,
+        hrm_model=hrm_model,
+        ouro_tok=ouro_tok,
+        hrm_tok=hrm_tok,
+        matcher=matcher,
+        device=device,
+    )

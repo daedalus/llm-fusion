@@ -42,7 +42,7 @@ bidirectional lookup that first tries exact string matches, then decode→re-enc
 classifying each match as `exact`, `approx`, or `mismatch`. About 37k tokens map cleanly.
 The fusion always operates in HRM's vocabulary space.
 
-Five fusion strategies are implemented in clean, well-separated private methods on `Fuser`:
+Fifteen fusion strategies are implemented in clean, well-separated private methods on `Fuser`:
 
 - **average** — weighted softmax blend (`ouro_weight=0.5`)
 - **dynamic** — Ouro weight decays linearly from initial to final over the generation steps **(default, best gain)**
@@ -222,7 +222,7 @@ Routing strategies (`cascade`, `min-perplexity`) pick one model per token. Blend
 | `--ouro-weight` | `0.5` | Ouro weight (average strategy) |
 | `--rep-penalty` | `1.0` | Repetition penalty (`>1` discourages repeats) |
 | `--condition` | `direct` | HRM condition: `direct`, `cot`, `noisy`, `synth` |
-| `--strategy` | `dynamic` | Fusion: `average`, `product`, `min-entropy`, `min-perplexity`, `cascade`, `dynamic`, `adaptive`, `confidence`, `hybrid`, `slerp`, `simple` |
+| `--strategy` | `dynamic` | Fusion: `average`, `product`, `min-entropy`, `min-perplexity`, `cascade`, `dynamic`, `adaptive`, `confidence`, `hybrid`, `slerp`, `simple`, `sqrt-product`, `min`, `log-sum`, `norm-product` |
 | `--cascade-threshold` | `0.5` | Ouro top-prob threshold for cascade strategy |
 | `--dynamic-initial-weight` | `0.8` | Starting Ouro weight for dynamic strategy |
 | `--dynamic-final-weight` | `0.2` | Final Ouro weight for dynamic strategy |
@@ -247,6 +247,10 @@ Routing strategies (`cascade`, `min-perplexity`) pick one model per token. Blend
 | `adaptive` | Entropy-weighted average, shifts weight toward the more confident model |
 | `confidence` | Top-1 probability weighted average |
 | `hybrid` | Blends dynamic decay with confidence weighting |
+| `sqrt-product` | Product of Experts with square root dampening |
+| `min` | Element-wise minimum of probability distributions |
+| `log-sum` | Log-sum-exp blending of probability distributions |
+| `norm-product` | Normalized Product of Experts |
 
 ## Requirements
 
@@ -280,7 +284,7 @@ See `AGENTS.md` for details.
 │   ├── cli.py                 # CLI argument parsing
 │   ├── generate.py            # Generation loop, perplexity, evaluation
 │   ├── loader.py              # Model loading, CausalLM protocol
-│   ├── fusion.py              # Fuser class (11 strategies) + KL divergence
+│   ├── fusion.py              # Fuser class (15 strategies) + KL divergence
 │   ├── metrics.py             # Fusion quality metrics (gain, win rate, eval)
 │   ├── benchmark.py           # Speed benchmarks + robustness battery
 │   ├── token_matcher.py       # Bidirectional token ID matcher
@@ -330,9 +334,10 @@ lizard src/ --CCN=15
   howpublished = {GitHub},
   url          = {https://github.com/daedalus/LLM_EXPERIMENT},
   abstract     = {Weighted logit fusion over ByteDance Ouro-1.4B and Sapient HRM-Text-1B
-                  under transformers 5.11.0. Implements 11 fusion strategies (average,
+                  under transformers 5.11.0. Implements 15 fusion strategies (average,
                   product, min-entropy, min-perplexity, cascade, dynamic, adaptive,
-                  confidence, hybrid, slerp, simple) via bidirectional token ID
+                  confidence, hybrid, slerp, simple, sqrt-product, min, log-sum,
+                  norm-product) via bidirectional token ID
                   matching. Includes KL divergence, fusion gain, perplexity evaluation,
                   and a 26-prompt robustness benchmark across 8 categories.},
 }

@@ -340,48 +340,11 @@ def load_models(
     device: str = "auto",
     local: bool = True,
 ) -> LoadedModels:
-    import torch
-    from tokenizers import Tokenizer
-    from transformers import AutoConfig, AutoModelForCausalLM
+    from llm_fusion.loader import load_all
 
-    from llm_fusion.loader import patch_ouro_model
-    from llm_fusion.token_matcher import TokenMatcher
-
-    bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
-    ouro_tok_path = bd / "Ouro-1.4B/tokenizer.json"
-    hrm_tok_path = bd / "HRM-Text-1B/tokenizer.json"
-    matcher = TokenMatcher(str(ouro_tok_path), str(hrm_tok_path))
-    ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
-    hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
-
-    if device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if device == "cpu" else torch.float16
-
-    print(f"Loading models on {device}...", file=sys.stderr)
-
-    ouro_model_path = str(bd / "Ouro-1.4B") if local else "ByteDance/Ouro-1.4B"
-    ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
-    patch_ouro_model(ouro_config)
-    ouro_model = AutoModelForCausalLM.from_pretrained(
-        ouro_model_path,
-        config=ouro_config,
-        torch_dtype=dtype,
-        device_map=device,
-        trust_remote_code=True,
-    )
-
-    hrm_model_path = str(bd / "HRM-Text-1B") if local else "sapientinc/HRM-Text-1B"
-    hrm_model = AutoModelForCausalLM.from_pretrained(
-        hrm_model_path,
-        torch_dtype=dtype,
-        device_map=device,
-        attn_implementation="sdpa",
-    )
-
-    print(f"Models loaded on {device}", file=sys.stderr)
-    return LoadedModels(matcher=matcher, ouro_tok=ouro_tok, hrm_tok=hrm_tok,
-                        ouro_model=ouro_model, hrm_model=hrm_model, device=device)
+    loaded = load_all(base_dir=base_dir, local=local)
+    return LoadedModels(matcher=loaded.matcher, ouro_tok=loaded.ouro_tok, hrm_tok=loaded.hrm_tok,
+                        ouro_model=loaded.ouro_model, hrm_model=loaded.hrm_model, device=loaded.device)
 
 
 def run_benchmark(
@@ -443,50 +406,15 @@ def run_benchmark(
         hrm_model = loaded.hrm_model
         device = loaded.device
     else:
-        import torch
-        from tokenizers import Tokenizer
-        from transformers import AutoConfig, AutoModelForCausalLM
+        from llm_fusion.loader import load_all
 
-        from llm_fusion.loader import patch_ouro_model
-        from llm_fusion.token_matcher import TokenMatcher
-
-        bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
-        ouro_tok_path = bd / "Ouro-1.4B/tokenizer.json"
-        hrm_tok_path = bd / "HRM-Text-1B/tokenizer.json"
-        matcher = TokenMatcher(str(ouro_tok_path), str(hrm_tok_path))
-        ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
-        hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
-
-        if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype = torch.bfloat16 if device == "cpu" else torch.float16
-
-        needs_ouro = any(c["model"] in ("fused", "ouro") for c in configs)
-        needs_hrm = any(c["model"] in ("fused", "hrm") for c in configs)
-
-        ouro_model = None
-        hrm_model = None
-
-        if needs_ouro:
-            ouro_model_path = str(bd / "Ouro-1.4B")
-            ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
-            patch_ouro_model(ouro_config)
-            ouro_model = AutoModelForCausalLM.from_pretrained(
-                ouro_model_path,
-                config=ouro_config,
-                torch_dtype=dtype,
-                device_map=device,
-                trust_remote_code=True,
-            )
-
-        if needs_hrm:
-            hrm_model_path = str(bd / "HRM-Text-1B")
-            hrm_model = AutoModelForCausalLM.from_pretrained(
-                hrm_model_path,
-                torch_dtype=dtype,
-                device_map=device,
-                attn_implementation="sdpa",
-            )
+        loaded = load_all(base_dir=base_dir, local=local)
+        matcher = loaded.matcher
+        ouro_tok = loaded.ouro_tok
+        hrm_tok = loaded.hrm_tok
+        ouro_model = loaded.ouro_model
+        hrm_model = loaded.hrm_model
+        device = loaded.device
 
     import torch
     import random as _random
@@ -579,7 +507,7 @@ def run_benchmark(
                             kw["use_cache"] = True
                             _ouro_input[0] = _ids[0]
                             return ouro_model(input_ids=_ouro_input, **kw)
-                        return ouro_model(input_ids=torch.tensor([_ids], device=device), **kw)
+                        return ouro_model(input_ids=torch.tensor([_ids], device=device, dtype=torch.long), **kw)
 
                 def _hrm_fwd(_ids=hrm_ids_list, _cache=hrm_cache, _step=step):
                     with torch.no_grad():
@@ -590,7 +518,7 @@ def run_benchmark(
                             _hrm_input[0] = _ids[0]
                             return hrm_model(input_ids=_hrm_input, token_type_ids=_hrm_tti_parallel, **kw)
                         tti = torch.ones(len(_ids), dtype=torch.long, device=device).unsqueeze(0)
-                        return hrm_model(input_ids=torch.tensor([_ids], device=device), token_type_ids=tti, **kw)
+                        return hrm_model(input_ids=torch.tensor([_ids], device=device, dtype=torch.long), token_type_ids=tti, **kw)
 
                 f_ouro = _pool.submit(_ouro_fwd)
                 f_hrm = _pool.submit(_hrm_fwd)
@@ -624,7 +552,7 @@ def run_benchmark(
                         _single_token[0] = ouro_ids[0]
                         ouro_input = _single_token
                     else:
-                        ouro_input = torch.tensor([ouro_ids], device=device)
+                        ouro_input = torch.tensor([ouro_ids], device=device, dtype=torch.long)
                     ouro_out = ouro_model(
                         input_ids=ouro_input,
                         **ouro_kwargs,
@@ -655,7 +583,7 @@ def run_benchmark(
                             len(hrm_ids_list), dtype=torch.long, device=device
                         ).unsqueeze(0)
                         hrm_out = hrm_model(
-                            input_ids=torch.tensor([hrm_ids_list], device=device),
+                            input_ids=torch.tensor([hrm_ids_list], device=device, dtype=torch.long),
                             token_type_ids=hrm_tti,
                         )
                 hrm_logits_t = hrm_out.logits[0, -1, :]
@@ -710,7 +638,33 @@ def run_benchmark(
                 fuser.current_step = step
                 ouro_logits_list = ouro_logits_t.tolist()
                 hrm_logits_list = hrm_logits_t.tolist()
-                hrm_tid, ouro_tid, token_str, prob = fuser.sample_token_pair(ouro_logits_list, hrm_logits_list, temperature, rng=rng)
+                hrm_tid, token_str, prob = fuser.sample_token(ouro_logits_list, hrm_logits_list, temperature, rng=rng)
+
+                hrm_ids_list = [hrm_tid]
+                hrm_gen_ids.add(hrm_tid)
+                generated_text += token_str
+
+                if strategy in ("min-entropy", "min-perplexity") and fuser.last_routed_model == "ouro":
+                    ouro_ids = [hrm_tid]
+                    ouro_gen_ids.add(hrm_tid)
+                    ouro_tid = hrm_tid
+                    ouro_tokens_used += 1
+                else:
+                    ouro_ids = ouro_tok.encode(generated_text).ids or [OURO_EOS_ID]
+                    ouro_gen_ids.update(ouro_ids)
+                    ouro_tid = ouro_ids[-1] if ouro_ids else 0
+                    if strategy in ("min-entropy", "min-perplexity"):
+                        hrm_tokens_used += 1
+                    elif strategy == "cascade":
+                        ouro_p_raw = parent_prob_for_token(ouro_logits_list, ouro_tid, top_k)
+                        hrm_p_raw = hrm_dist.get(hrm_tid, 0.0)
+                        if ouro_p_raw >= hrm_p_raw:
+                            ouro_tokens_used += 1
+                        else:
+                            hrm_tokens_used += 1
+                    else:
+                        ouro_tokens_used += 1
+                        hrm_tokens_used += 1
 
                 ouro_p = parent_prob_for_token(ouro_logits_list, ouro_tid, top_k)
                 hrm_p = hrm_dist.get(hrm_tid, 0.0)
@@ -721,21 +675,6 @@ def run_benchmark(
                     fusion_wins += 1
                 if ouro_p >= hrm_p:
                     oracle_matches += 1
-                hrm_ids_list = [hrm_tid]
-                ouro_ids = [ouro_tid]
-                hrm_gen_ids.add(hrm_tid)
-                if strategy in ("min-entropy", "min-perplexity") and fuser.last_routed_model == "ouro":
-                    ouro_tokens_used += 1
-                elif strategy in ("min-entropy", "min-perplexity") and fuser.last_routed_model == "hrm":
-                    hrm_tokens_used += 1
-                elif strategy == "cascade":
-                    if ouro_p >= hrm_p:
-                        ouro_tokens_used += 1
-                    else:
-                        hrm_tokens_used += 1
-                else:
-                    ouro_tokens_used += 1
-                    hrm_tokens_used += 1
 
                 agree_steps += agreement_rate(ouro_logits_list, hrm_logits_list)
 
@@ -782,7 +721,7 @@ def run_benchmark(
                 if check_tid == eos:
                     break
 
-            if token_str:
+            if token_str and model != "fused":
                 generated_text += token_str
 
         total = time.time() - t0
@@ -958,44 +897,20 @@ def run_robustness_benchmark(
             return [RobustnessResult(**d) for d in cached]
 
     import torch
-    from tokenizers import Tokenizer
-    from transformers import AutoConfig, AutoModelForCausalLM
+    from llm_fusion.loader import load_all
+
+    loaded = load_all(base_dir=base_dir, local=True)
+    matcher = loaded.matcher
+    ouro_tok = loaded.ouro_tok
+    hrm_tok = loaded.hrm_tok
+    ouro_model = loaded.ouro_model
+    hrm_model = loaded.hrm_model
+    device = loaded.device
 
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k
-    from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID, apply_repetition_penalty
+    from llm_fusion.generate import format_hrm_prompt
     from llm_fusion.metrics import fusion_gain as _calc_gain
-    from llm_fusion.metrics import parent_prob_for_token, topk_accuracy, agreement_rate, calibration_error, token_diversity
-    from llm_fusion.token_matcher import TokenMatcher
-
-    bd = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent.parent
-    ouro_tok_path = bd / "Ouro-1.4B/tokenizer.json"
-    hrm_tok_path = bd / "HRM-Text-1B/tokenizer.json"
-    matcher = TokenMatcher(str(ouro_tok_path), str(hrm_tok_path))
-    ouro_tok = Tokenizer.from_file(str(ouro_tok_path))
-    hrm_tok = Tokenizer.from_file(str(hrm_tok_path))
-
-    if device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if device == "cpu" else torch.float16
-
-    ouro_model_path = str(bd / "Ouro-1.4B")
-    ouro_config = AutoConfig.from_pretrained(ouro_model_path, trust_remote_code=True)
-    patch_ouro_model(ouro_config)
-    ouro_model = AutoModelForCausalLM.from_pretrained(
-        ouro_model_path,
-        config=ouro_config,
-        torch_dtype=dtype,
-        device_map=device,
-        trust_remote_code=True,
-    )
-
-    hrm_model_path = str(bd / "HRM-Text-1B")
-    hrm_model = AutoModelForCausalLM.from_pretrained(
-        hrm_model_path,
-        torch_dtype=dtype,
-        device_map=device,
-        attn_implementation="sdpa",
-    )
+    from llm_fusion.metrics import parent_prob_for_token
 
     fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, "average")
 
@@ -1028,14 +943,14 @@ def run_robustness_benchmark(
             )
             with torch.no_grad():
                 ouro_out = ouro_model(
-                    input_ids=torch.tensor([ouro_prefix_ids], device=device),
+                    input_ids=torch.tensor([ouro_prefix_ids], device=device, dtype=torch.long),
                 )
             ouro_logits = ouro_out.logits[0, -1, :].tolist()
 
             hrm_input_ids = hrm_ids_list
             with torch.no_grad():
                 hrm_out = hrm_model(
-                    input_ids=torch.tensor([hrm_input_ids], device=device),
+                    input_ids=torch.tensor([hrm_input_ids], device=device, dtype=torch.long),
                     token_type_ids=torch.ones(
                         len(hrm_input_ids), dtype=torch.long, device=device
                     ).unsqueeze(0),
@@ -1101,9 +1016,9 @@ def _quick_ppl(text: str, model: Any, tok: Any, device: str) -> float:
     if len(ids) < 2:
         return float("inf")
     with torch.no_grad():
-        out = model(input_ids=torch.tensor([ids], device=device))
+        out = model(input_ids=torch.tensor([ids], device=device, dtype=torch.long))
     logits = out.logits[0, :-1, :]
-    targets = torch.tensor(ids[1:], device=device)
+    targets = torch.tensor(ids[1:], device=device, dtype=torch.long)
     ce = torch.nn.functional.cross_entropy(logits, targets)
     return float(math.exp(ce))
 

@@ -62,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--strategy",
         choices=["average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid", "slerp", "simple", "sqrt-product", "min", "log-sum", "norm-product"],
         default="dynamic",
-        help="Fusion strategy: average, product, min-entropy, cascade, dynamic, sqrt-product, min, log-sum, or norm-product",
+        help="Fusion strategy: average, product, min-entropy, min-perplexity, cascade, dynamic, adaptive, confidence, hybrid, slerp, simple, sqrt-product, min, log-sum, norm-product",
     )
     parser.add_argument(
         "--cascade-threshold",

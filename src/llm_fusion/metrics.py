@@ -226,10 +226,10 @@ def evaluate_text(
 
         with torch.no_grad():
             ouro_out = ouro_model(
-                torch.tensor([ouro_prefix_ids], device=device),
+                torch.tensor([ouro_prefix_ids], device=device, dtype=torch.long),
             )
             hrm_out = hrm_model(
-                torch.tensor([seq[:t]], device=device),
+                torch.tensor([seq[:t]], device=device, dtype=torch.long),
                 token_type_ids=torch.ones(t, dtype=torch.long, device=device).unsqueeze(0),
             )
 
