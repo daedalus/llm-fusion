@@ -135,6 +135,31 @@ python -m llm_fusion --model hrm --perplexity --local "The quick brown fox jumps
 python -m llm_fusion --perplexity --local "The quick brown fox jumps over the lazy dog"
 ```
 
+### Strategy Discovery
+
+Automatically find optimal fusion strategies via parameter tuning, composition, and evolution:
+
+```bash
+# Tier 1: tune parameters for each of 15 strategies (fastest)
+python -m llm_fusion discover --tier 1 --budget 200 --local
+
+# Tier 2: search for weighted combinations of existing strategies
+python -m llm_fusion discover --tier 2 --budget 300 --local
+
+# Tier 3: evolve new strategies via genetic programming over a DSL
+python -m llm_fusion discover --tier 3 --budget 600 --local
+
+# All tiers sequentially (Tier 1 results seed Tier 2, Tier 2 seeds Tier 3)
+python -m llm_fusion discover --tier all --local
+
+# Custom options
+python -m llm_fusion discover --tier 1 --budget 50 --prompts 24 --seed 42
+```
+
+Discovery evaluates candidates against the full 48-prompt robustness battery.
+Multi-objective Pareto ranking across `fusion_gain`, `win_rate`, and `regret`.
+Results saved to `results/discover_tierN_TIMESTAMP.json`.
+
 ### Benchmarks
 
 ```bash
@@ -152,7 +177,7 @@ python -m llm_fusion benchmark --benchmark-cache
 python -m llm_fusion benchmark --device cpu
 python -m llm_fusion benchmark --device cuda
 
-# Run robustness benchmark on a diverse battery of 25+ prompts
+# Run robustness benchmark on a diverse battery of 48 prompts
 # Measures: perplexity, fusion gain, win rate, KL divergence
 # Reports aggregated by category (factual, reasoning, math, code, etc.)
 python -m llm_fusion benchmark --robustness
@@ -287,9 +312,10 @@ See `AGENTS.md` for details.
 │   ├── fusion.py              # Fuser class (15 strategies) + KL divergence
 │   ├── metrics.py             # Fusion quality metrics (gain, win rate, eval)
 │   ├── benchmark.py           # Speed benchmarks + robustness battery
+│   ├── discover.py            # Strategy discovery (param, compose, evolve)
 │   ├── token_matcher.py       # Bidirectional token ID matcher
 │   └── py.typed               # Type hints marker
-├── tests/                     # Pytest suite (96+ tests)
+├── tests/                     # Pytest suite (114+ tests)
 ├── Ouro-1.4B/                 # Model weights + patched modeling_ouro.py
 └── HRM-Text-1B/               # Model weights
 ```
