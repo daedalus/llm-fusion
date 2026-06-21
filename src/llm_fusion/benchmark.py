@@ -442,7 +442,13 @@ def run_benchmark(
 
         r = BenchmarkResult(model=model, strategy=strategy)
 
-        fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, strategy)
+        fuser = Fuser(
+            matcher, ouro_tok, hrm_tok, ouro_weight, top_k, strategy,
+            cascade_threshold=cfg.get("cascade_threshold", 0.5),
+            dynamic_initial_weight=cfg.get("dynamic_initial_weight", 0.6),
+            dynamic_final_weight=cfg.get("dynamic_final_weight", 0.4),
+            dynamic_total_steps=cfg.get("dynamic_total_steps", 100),
+        )
 
         if model in ("ouro", "fused"):
             ouro_prompt_ids = ouro_tok.encode(text).ids

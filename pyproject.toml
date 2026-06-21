@@ -65,6 +65,7 @@ ignore = ["E501"]
 "tests/*" = ["ARG", "ANN"]
 "src/llm_fusion/generate.py" = ["F821", "F841"]
 "src/llm_fusion/benchmark.py" = ["ARG001", "ANN401"]
+"src/llm_fusion/discover.py" = ["ANN401"]
 "src/llm_fusion/metrics.py" = ["ANN401"]
 
 [tool.ruff.lint.pydocstyle]
