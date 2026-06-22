@@ -128,7 +128,7 @@ def calibration_error(
         return 0.0
     bins: list[list[tuple[float, bool]]] = [[] for _ in range(n_bins)]
     for p, o in zip(predicted_probs, outcomes):
-        idx = min(int(p * n_bins), n_bins - 1)
+        idx = min(max(int(p * n_bins), 0), n_bins - 1)
         bins[idx].append((p, o))
     ece = 0.0
     total = len(predicted_probs)

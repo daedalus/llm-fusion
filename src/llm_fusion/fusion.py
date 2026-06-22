@@ -155,8 +155,9 @@ class Fuser:
             fused[tid] = p_ouro * p_hrm
 
         total = sum(fused.values())
-        if total > 0:
-            fused = {tid: p / total for tid, p in fused.items()}
+        if total <= 0:
+            return []
+        fused = {tid: p / total for tid, p in fused.items()}
 
         fused_items = sorted(fused.items(), key=lambda x: -x[1])
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
@@ -265,10 +266,7 @@ class Fuser:
         dot = max(-1.0, min(1.0, dot))
         theta = math.acos(dot)
 
-        if theta < 1e-6:
-            t = alpha
-        else:
-            t = alpha
+        t = alpha
 
         sin_theta = math.sin(theta)
         if abs(sin_theta) < 1e-10:
@@ -352,8 +350,9 @@ class Fuser:
             fused[tid] = math.sqrt(p_ouro * p_hrm)
 
         total = sum(fused.values())
-        if total > 0:
-            fused = {tid: p / total for tid, p in fused.items()}
+        if total <= 0:
+            return []
+        fused = {tid: p / total for tid, p in fused.items()}
 
         fused_items = sorted(fused.items(), key=lambda x: -x[1])
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
@@ -388,8 +387,9 @@ class Fuser:
             fused[tid] = min(p_ouro, p_hrm)
 
         total = sum(fused.values())
-        if total > 0:
-            fused = {tid: p / total for tid, p in fused.items()}
+        if total <= 0:
+            return []
+        fused = {tid: p / total for tid, p in fused.items()}
 
         fused_items = sorted(fused.items(), key=lambda x: -x[1])
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
@@ -468,7 +468,10 @@ class Fuser:
         s_hrm = torch.softmax(z_hrm, dim=0)
 
         product = s_ouro * s_hrm
-        normed = product / product.sum()
+        product_sum = product.sum()
+        if product_sum <= 0:
+            return []
+        normed = product / product_sum
 
         fused = {}
         for i, tid in enumerate(all_ids):
@@ -520,7 +523,7 @@ class Fuser:
         ouro_entropy = self._distribution_entropy(ouro_logits, self.top_k)
         hrm_entropy = self._distribution_entropy(hrm_logits, self.top_k)
         total = ouro_entropy + hrm_entropy
-        if total < 1e-10:
+        if not math.isfinite(total) or total < 1e-10:
             ow, hw = 0.5, 0.5
         else:
             ow = hrm_entropy / total
