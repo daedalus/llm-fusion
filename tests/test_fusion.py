@@ -473,6 +473,63 @@ class TestSimple:
         assert results == []
 
 
+class TestNormalization:
+    ALL_STRATEGIES = [
+        "average", "product", "min-entropy", "min-perplexity", "cascade",
+        "dynamic", "adaptive", "confidence", "hybrid", "slerp", "simple",
+        "sqrt-product", "min", "log-sum", "norm-product",
+    ]
+    FULL_VOCAB_STRATEGIES = [
+        "average", "product", "dynamic", "adaptive", "confidence",
+        "hybrid", "slerp", "simple", "sqrt-product", "min", "log-sum", "norm-product",
+    ]
+
+    def test_all_strategies_normalize(self, matcher) -> None:
+        ouro_logits = [0.0] * matcher.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * matcher.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 5.0
+        hrm_logits[371] = 5.0
+        for strategy in self.FULL_VOCAB_STRATEGIES:
+            fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy=strategy)
+            results = fuser.fuse_logits(ouro_logits, hrm_logits)
+            if not results:
+                continue
+            total = sum(p for _, p, _ in results)
+            assert abs(total - 1.0) < 1e-4, f"{strategy}: sum={total}"
+
+    def test_topk_strategies_subset_sum(self, matcher) -> None:
+        ouro_logits = [0.0] * matcher.ouro_tok.get_vocab_size()
+        hrm_logits = [0.0] * matcher.hrm_tok.get_vocab_size()
+        ouro_logits[335] = 5.0
+        hrm_logits[371] = 5.0
+        for strategy in ["min-entropy", "min-perplexity", "cascade"]:
+            fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy=strategy)
+            results = fuser.fuse_logits(ouro_logits, hrm_logits)
+            if not results:
+                continue
+            total = sum(p for _, p, _ in results)
+            assert 0.0 < total <= 1.0, f"{strategy}: sum={total} not in (0, 1]"
+
+    def test_empty_logits_return_empty(self, matcher) -> None:
+        for strategy in self.ALL_STRATEGIES:
+            fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy=strategy)
+            results = fuser.fuse_logits([], [])
+            assert results == [], f"{strategy}: expected empty for empty logits"
+
+    def test_single_token_normalized(self, matcher) -> None:
+        for strategy in self.ALL_STRATEGIES:
+            fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy=strategy)
+            ouro_logits = [0.0] * matcher.ouro_tok.get_vocab_size()
+            hrm_logits = [0.0] * matcher.hrm_tok.get_vocab_size()
+            ouro_logits[335] = 20.0
+            hrm_logits[335] = 20.0
+            results = fuser.fuse_logits(ouro_logits, hrm_logits)
+            if not results:
+                continue
+            total = sum(p for _, p, _ in results)
+            assert abs(total - 1.0) < 1e-4, f"{strategy}: sum={total}"
+
+
 class TestSampleTokenPair:
     def test_sample_token_pair_returns_both_ids(self, matcher) -> None:
         fuser = Fuser(matcher, matcher.ouro_tok, matcher.hrm_tok, strategy="average")
