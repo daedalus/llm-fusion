@@ -122,6 +122,11 @@ class Fuser:
             for tid in match.target_ids:
                 fused[tid] = fused.get(tid, 0.0) + share * ow
 
+        total = sum(fused.values())
+        if total <= 0:
+            return []
+        fused = {tid: p / total for tid, p in fused.items()}
+
         fused_items = sorted(fused.items(), key=lambda x: -x[1])
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
 
@@ -286,6 +291,11 @@ class Fuser:
         for i, tid in enumerate(all_ids):
             fused[tid] = blended[i] / norm_blend
 
+        total = sum(fused.values())
+        if total <= 0:
+            return []
+        fused = {tid: p / total for tid, p in fused.items()}
+
         fused_items = sorted(fused.items(), key=lambda x: -x[1])
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
 
@@ -316,6 +326,11 @@ class Fuser:
             all_probs[tid] = all_probs.get(tid, 0.0) + p
         for tid, p in hrm_probs_dict.items():
             all_probs[tid] = all_probs.get(tid, 0.0) + p
+
+        total = sum(all_probs.values())
+        if total <= 0:
+            return []
+        all_probs = {tid: p / total for tid, p in all_probs.items()}
 
         fused_items = sorted(all_probs.items(), key=lambda x: -x[1])
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
