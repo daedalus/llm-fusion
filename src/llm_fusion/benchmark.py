@@ -441,6 +441,8 @@ def run_benchmark(
 
     results: list[BenchmarkResult] = []
 
+    _stats_cache: dict[tuple[str, bool, bool], dict[str, float]] = {}
+
     for cfg in configs:
         model = cfg["model"]
         strategy = cfg.get("strategy", "dynamic")
@@ -748,24 +750,36 @@ def run_benchmark(
         r.prompt = text
         r.completion = generated_text
         full_text = text + generated_text
-        if model in ("ouro", "fused") and generated_text:
-            r.ouro_ppl = _quick_ppl(full_text, ouro_model, ouro_tok, device)
-        if model in ("hrm", "fused") and generated_text:
-            hrm_formatted = format_hrm_prompt(full_text, "direct")
-            r.hrm_ppl = _quick_ppl(hrm_formatted, hrm_model, hrm_tok, device)
-        if model == "fused":
-            r.fused_ppl = (r.ouro_ppl + r.hrm_ppl) / 2
-        if r.ouro_ppl > 0:
-            r.ouro_bpt = math.log2(r.ouro_ppl)
-        if r.hrm_ppl > 0:
-            r.hrm_bpt = math.log2(r.hrm_ppl)
-        if r.fused_ppl > 0:
-            r.fused_bpt = math.log2(r.fused_ppl)
-        full_tokens = len(ouro_tok.encode(full_text).ids) if model in ("ouro", "fused") else len(hrm_tok.encode(format_hrm_prompt(full_text, "direct")).ids)
-        if full_tokens > 0:
-            r.raw_bpt = len(full_text.encode("utf-8")) * 8 / full_tokens
-        if full_text:
-            r.zlib_ratio = len(zlib.compress(full_text.encode("utf-8"))) / len(full_text.encode("utf-8"))
+        cache_key = (full_text, model in ("ouro", "fused"), model in ("hrm", "fused"))
+        cached = _stats_cache.get(cache_key)
+        if cached is None:
+            cached = {}
+            if model in ("ouro", "fused") and generated_text:
+                cached["ouro_ppl"] = _quick_ppl(full_text, ouro_model, ouro_tok, device)
+            if model in ("hrm", "fused") and generated_text:
+                hrm_formatted = format_hrm_prompt(full_text, "direct")
+                cached["hrm_ppl"] = _quick_ppl(hrm_formatted, hrm_model, hrm_tok, device)
+            cached["fused_ppl"] = (cached.get("ouro_ppl", 0.0) + cached.get("hrm_ppl", 0.0)) / 2
+            if cached.get("ouro_ppl", 0) > 0:
+                cached["ouro_bpt"] = math.log2(cached["ouro_ppl"])
+            if cached.get("hrm_ppl", 0) > 0:
+                cached["hrm_bpt"] = math.log2(cached["hrm_ppl"])
+            if cached.get("fused_ppl", 0) > 0:
+                cached["fused_bpt"] = math.log2(cached["fused_ppl"])
+            full_tokens = len(ouro_tok.encode(full_text).ids) if model in ("ouro", "fused") else len(hrm_tok.encode(format_hrm_prompt(full_text, "direct")).ids)
+            if full_tokens > 0:
+                cached["raw_bpt"] = len(full_text.encode("utf-8")) * 8 / full_tokens
+            if full_text:
+                cached["zlib_ratio"] = len(zlib.compress(full_text.encode("utf-8"))) / len(full_text.encode("utf-8"))
+            _stats_cache[cache_key] = cached
+        r.ouro_ppl = cached.get("ouro_ppl", 0.0)
+        r.hrm_ppl = cached.get("hrm_ppl", 0.0)
+        r.fused_ppl = cached.get("fused_ppl", 0.0)
+        r.ouro_bpt = cached.get("ouro_bpt", 0.0)
+        r.hrm_bpt = cached.get("hrm_bpt", 0.0)
+        r.fused_bpt = cached.get("fused_bpt", 0.0)
+        r.raw_bpt = cached.get("raw_bpt", 0.0)
+        r.zlib_ratio = cached.get("zlib_ratio", 0.0)
         if model == "fused" and n_kl_steps > 0:
             r.avg_kl_oh = total_kl_oh / n_kl_steps
             r.avg_kl_ho = total_kl_ho / n_kl_steps
