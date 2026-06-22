@@ -8,6 +8,7 @@ import logging
 import math
 import sys
 import time
+import zlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -283,6 +284,11 @@ class BenchmarkResult:
     ouro_ppl: float = 0.0
     hrm_ppl: float = 0.0
     fused_ppl: float = 0.0
+    ouro_bpt: float = 0.0
+    hrm_bpt: float = 0.0
+    fused_bpt: float = 0.0
+    raw_bpt: float = 0.0
+    zlib_ratio: float = 0.0
     avg_kl_oh: float = 0.0
     avg_kl_ho: float = 0.0
     avg_jsd: float = 0.0
@@ -749,6 +755,17 @@ def run_benchmark(
             r.hrm_ppl = _quick_ppl(hrm_formatted, hrm_model, hrm_tok, device)
         if model == "fused":
             r.fused_ppl = (r.ouro_ppl + r.hrm_ppl) / 2
+        if r.ouro_ppl > 0:
+            r.ouro_bpt = math.log2(r.ouro_ppl)
+        if r.hrm_ppl > 0:
+            r.hrm_bpt = math.log2(r.hrm_ppl)
+        if r.fused_ppl > 0:
+            r.fused_bpt = math.log2(r.fused_ppl)
+        full_tokens = len(ouro_tok.encode(full_text).ids) if model in ("ouro", "fused") else len(hrm_tok.encode(format_hrm_prompt(full_text, "direct")).ids)
+        if full_tokens > 0:
+            r.raw_bpt = len(full_text.encode("utf-8")) * 8 / full_tokens
+        if full_text:
+            r.zlib_ratio = len(zlib.compress(full_text.encode("utf-8"))) / len(full_text.encode("utf-8"))
         if model == "fused" and n_kl_steps > 0:
             r.avg_kl_oh = total_kl_oh / n_kl_steps
             r.avg_kl_ho = total_kl_ho / n_kl_steps
@@ -838,16 +855,16 @@ def run_benchmark(
 def format_table(results: list[BenchmarkResult], show_completions: bool = False) -> str:
     lines = []
     lines.append(
-        f"{'Config':30s}  {'Decode':>8s}  {'Gen':>8s}  {'FusedPPL':>9s}  {'KL(o>h)':>8s}  {'JSD':>6s}  "
+        f"{'Config':30s}  {'Decode':>8s}  {'Gen':>8s}  {'FusedPPL':>9s}  {'BPT':>6s}  {'RawBPT':>7s}  {'zlib':>6s}  {'KL(o>h)':>8s}  {'JSD':>6s}  "
         f"{'WinRate':>8s}  {'Gain':>8s}  {'Oracle':>8s}  {'Entropy':>8s}  "
         f"{'Agree':>6s}  {'Top1':>6s}  {'Top10':>6s}  {'Regret':>7s}  {'Ouro%':>6s}  {'CalErr':>7s}  {'EntDlt':>7s}  {'Diversity':>9s}  {'OuroTok':>8s}  {'HrmTok':>8s}"
     )
-    lines.append("-" * 210)
+    lines.append("-" * 234)
     for r in results:
         label = f"{r.model}/{r.strategy}"
         lines.append(
             f"{label:30s}  {r.decoding_tps:7.1f}  {r.generation_tps:7.1f}  "
-            f"{r.fused_ppl:9.1f}  {r.avg_kl_oh:8.3f}  {r.avg_jsd:6.3f}  "
+            f"{r.fused_ppl:9.1f}  {r.fused_bpt:6.2f}  {r.raw_bpt:7.2f}  {r.zlib_ratio:6.3f}  {r.avg_kl_oh:8.3f}  {r.avg_jsd:6.3f}  "
             f"{r.fusion_win_rate:7.1%}  {r.avg_fusion_gain:+7.3f}  {r.oracle_rate:7.1%}  {r.fused_entropy:8.1f}  "
             f"{r.agreement_rate:5.0%}  {r.top1_accuracy_fused:5.0%}  {r.top10_accuracy_fused:5.0%}  {r.avg_fusion_regret:7.3f}  {r.contribution_ratio:5.0%}  {r.calibration_error:7.3f}  {r.entropy_delta:+7.2f}  {r.token_diversity:9.2f}  {r.ouro_tokens_used:8d}  {r.hrm_tokens_used:8d}"
         )
@@ -867,6 +884,11 @@ class RobustnessResult:
     ouro_ppl: float = 0.0
     hrm_ppl: float = 0.0
     fused_ppl: float = 0.0
+    ouro_bpt: float = 0.0
+    hrm_bpt: float = 0.0
+    fused_bpt: float = 0.0
+    raw_bpt: float = 0.0
+    zlib_ratio: float = 0.0
     avg_fusion_gain: float = 0.0
     fusion_win_rate: float = 0.0
     avg_kl_oh: float = 0.0
@@ -989,6 +1011,14 @@ def run_robustness_benchmark(
 
         ouro_ppl = _quick_ppl(prompt, ouro_model, ouro_tok, device)
         hrm_ppl = _quick_ppl(format_hrm_prompt(prompt, "direct"), hrm_model, hrm_tok, device)
+        fused_ppl = (ouro_ppl + hrm_ppl) / 2
+        ouro_bpt = math.log2(ouro_ppl) if ouro_ppl > 0 else 0.0
+        hrm_bpt = math.log2(hrm_ppl) if hrm_ppl > 0 else 0.0
+        fused_bpt = math.log2(fused_ppl) if fused_ppl > 0 else 0.0
+        full_tokens = len(ouro_tok.encode(prompt).ids)
+        raw_bpt = len(prompt.encode("utf-8")) * 8 / full_tokens if full_tokens > 0 else 0.0
+        prompt_bytes = prompt.encode("utf-8")
+        zlib_ratio = len(zlib.compress(prompt_bytes)) / len(prompt_bytes) if prompt_bytes else 0.0
 
         results.append(
             RobustnessResult(
@@ -997,7 +1027,12 @@ def run_robustness_benchmark(
                 subdomain=sub,
                 ouro_ppl=ouro_ppl,
                 hrm_ppl=hrm_ppl,
-                fused_ppl=(ouro_ppl + hrm_ppl) / 2,
+                fused_ppl=fused_ppl,
+                ouro_bpt=ouro_bpt,
+                hrm_bpt=hrm_bpt,
+                fused_bpt=fused_bpt,
+                raw_bpt=raw_bpt,
+                zlib_ratio=zlib_ratio,
                 avg_fusion_gain=total_gain / max(n_steps, 1),
                 fusion_win_rate=fusion_wins / max(n_steps, 1),
                 avg_kl_oh=total_kl_oh / max(n_steps, 1),
