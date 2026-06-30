@@ -37,16 +37,16 @@ def strip_hrm_output(text: str) -> str:
 
 def apply_repetition_penalty(
     logits: list[float],
-    seen_ids: set[int],
+    seen_ids: set[int] | dict[int, int],
     penalty: float,
 ) -> list[float]:
     if penalty == 1.0 or not seen_ids:
         return logits
     out = list(logits)
-    for tid in seen_ids:
+    for tid, count in (seen_ids.items() if isinstance(seen_ids, dict) else ((t, 1) for t in seen_ids)):
         if 0 <= tid < len(out):
             divisor = penalty if out[tid] >= 0 else max(2 - penalty, 1e-8)
-            out[tid] /= divisor
+            out[tid] /= divisor ** count
     return out
 
 

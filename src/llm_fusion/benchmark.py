@@ -506,6 +506,8 @@ def run_benchmark(
         jaccard_fused_ouro_sum = 0.0
         jaccard_fused_hrm_sum = 0.0
         jaccard_steps = 0
+        ouro_counts: dict[int, int] = {}
+        hrm_counts: dict[int, int] = {}
         t0 = time.time()
 
         _single_token = torch.tensor([[0]], device=device, dtype=torch.long)
@@ -553,7 +555,7 @@ def run_benchmark(
                     ouro_cache = ouro_out.past_key_values
                 if repetition_penalty != 1.0:
                     ouro_logits_t = torch.tensor(
-                        apply_repetition_penalty(ouro_logits_t.tolist(), ouro_gen_ids, repetition_penalty),
+                        apply_repetition_penalty(ouro_logits_t.tolist(), ouro_counts, repetition_penalty),
                         device=device,
                     )
 
@@ -562,7 +564,7 @@ def run_benchmark(
                     hrm_cache = hrm_out.past_key_values
                 if repetition_penalty != 1.0:
                     hrm_logits_t = torch.tensor(
-                        apply_repetition_penalty(hrm_logits_t.tolist(), hrm_gen_ids, repetition_penalty),
+                        apply_repetition_penalty(hrm_logits_t.tolist(), hrm_counts, repetition_penalty),
                         device=device,
                     )
 
@@ -585,7 +587,7 @@ def run_benchmark(
                     ouro_cache = ouro_out.past_key_values
                 if repetition_penalty != 1.0:
                     ouro_logits_t = torch.tensor(
-                        apply_repetition_penalty(ouro_logits_t.tolist(), ouro_gen_ids, repetition_penalty),
+                        apply_repetition_penalty(ouro_logits_t.tolist(), ouro_counts, repetition_penalty),
                         device=device,
                     )
 
@@ -614,7 +616,7 @@ def run_benchmark(
                     hrm_cache = hrm_out.past_key_values
                 if repetition_penalty != 1.0:
                     hrm_logits_t = torch.tensor(
-                        apply_repetition_penalty(hrm_logits_t.tolist(), hrm_gen_ids, repetition_penalty),
+                        apply_repetition_penalty(hrm_logits_t.tolist(), hrm_counts, repetition_penalty),
                         device=device,
                     )
 
@@ -674,17 +676,18 @@ def run_benchmark(
                 jaccard_fused_hrm_sum += jaccard_index(fused_top_k, hrm_set)
 
                 hrm_ids_list = [hrm_tid]
-                hrm_gen_ids.add(hrm_tid)
+                hrm_counts[hrm_tid] = hrm_counts.get(hrm_tid, 0) + 1
                 generated_text += token_str
 
                 if strategy in ("min-entropy", "min-perplexity") and fuser.last_routed_model == "ouro":
                     ouro_ids = [hrm_tid]
-                    ouro_gen_ids.add(hrm_tid)
+                    ouro_counts[hrm_tid] = ouro_counts.get(hrm_tid, 0) + 1
                     ouro_tid = hrm_tid
                     ouro_tokens_used += 1
                 else:
                     ouro_ids = ouro_tok.encode(generated_text).ids or [OURO_EOS_ID]
-                    ouro_gen_ids.update(ouro_ids)
+                    for oid in ouro_ids:
+                        ouro_counts[oid] = ouro_counts.get(oid, 0) + 1
                     ouro_tid = ouro_ids[-1] if ouro_ids else 0
                     if strategy in ("min-entropy", "min-perplexity"):
                         hrm_tokens_used += 1
@@ -1027,8 +1030,8 @@ def run_robustness_benchmark(
         generated_text = ""
         jaccard_ouro_hrm_sum = 0.0
         jaccard_steps = 0
-        seen_ouro_ids: set[int] = set()
-        seen_hrm_ids: set[int] = set()
+        ouro_counts: dict[int, int] = {}
+        hrm_counts: dict[int, int] = {}
 
         for step in range(min(max_new_tokens, 30)):
             ouro_prefix_ids = (
@@ -1053,8 +1056,8 @@ def run_robustness_benchmark(
             hrm_logits = hrm_out.logits[0, -1, :].tolist()
 
             if repetition_penalty != 1.0:
-                ouro_logits = apply_repetition_penalty(ouro_logits, seen_ouro_ids, repetition_penalty)
-                hrm_logits = apply_repetition_penalty(hrm_logits, seen_hrm_ids, repetition_penalty)
+                ouro_logits = apply_repetition_penalty(ouro_logits, ouro_counts, repetition_penalty)
+                hrm_logits = apply_repetition_penalty(hrm_logits, hrm_counts, repetition_penalty)
 
             ouro_ids_k, ouro_probs = softmax_top_k(ouro_logits, top_k)
             hrm_ids_k, hrm_probs = softmax_top_k(hrm_logits, top_k)
@@ -1075,9 +1078,10 @@ def run_robustness_benchmark(
             if prob > max(ouro_p, hrm_p):
                 fusion_wins += 1
 
-            seen_hrm_ids.add(tid)
+            hrm_counts[tid] = hrm_counts.get(tid, 0) + 1
             if ouro_match:
-                seen_ouro_ids.update(ouro_match)
+                for oid in ouro_match:
+                    ouro_counts[oid] = ouro_counts.get(oid, 0) + 1
             hrm_ids_list.append(tid)
             if token_str:
                 generated_text += token_str
