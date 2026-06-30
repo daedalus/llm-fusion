@@ -148,6 +148,19 @@ def token_diversity(token_ids: list[int]) -> float:
     return len(set(token_ids)) / len(token_ids)
 
 
+def jaccard_index(set_a: set[int], set_b: set[int]) -> float:
+    """Jaccard similarity coefficient between two token ID sets.
+
+    J(A,B) = |A ∩ B| / |A ∪ B|
+    Ranges from 0.0 (no overlap) to 1.0 (identical sets).
+    """
+    if not set_a and not set_b:
+        return 1.0
+    intersection = len(set_a & set_b)
+    union = len(set_a | set_b)
+    return intersection / union if union > 0 else 0.0
+
+
 def compare_distributions(
     ouro_logits: list[float],
     hrm_logits: list[float],

@@ -310,6 +310,9 @@ class BenchmarkResult:
     contribution_ratio: float = 0.0
     calibration_error: float = 0.0
     token_diversity: float = 0.0
+    avg_token_overlap: float = 0.0
+    fused_ouro_overlap: float = 0.0
+    fused_hrm_overlap: float = 0.0
     prompt: str = ""
     completion: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
@@ -427,7 +430,7 @@ def run_benchmark(
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k, softmax_top_k_torch
     from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID, apply_repetition_penalty
     from llm_fusion.metrics import fusion_gain as _calc_gain
-    from llm_fusion.metrics import parent_prob_for_token, agreement_rate, calibration_error, token_diversity
+    from llm_fusion.metrics import parent_prob_for_token, agreement_rate, calibration_error, token_diversity, jaccard_index
 
     if seed is not None:
         _random.seed(seed)
@@ -497,6 +500,10 @@ def run_benchmark(
         ouro_tokens_used = 0
         hrm_tokens_used = 0
         ttft = 0.0
+        jaccard_ouro_hrm_sum = 0.0
+        jaccard_fused_ouro_sum = 0.0
+        jaccard_fused_hrm_sum = 0.0
+        jaccard_steps = 0
         t0 = time.time()
 
         _single_token = torch.tensor([[0]], device=device, dtype=torch.long)
@@ -649,10 +656,20 @@ def run_benchmark(
                 total_entropy += entropy
                 n_kl_steps += 1
 
+                ouro_set = set(ouro_top_ids)
+                hrm_set = set(hrm_top_ids)
+                jaccard_ouro_hrm_sum += jaccard_index(ouro_set, hrm_set)
+                jaccard_steps += 1
+
                 fuser.current_step = step
                 ouro_logits_list = ouro_logits_t.tolist()
                 hrm_logits_list = hrm_logits_t.tolist()
                 hrm_tid, token_str, prob = fuser.sample_token(ouro_logits_list, hrm_logits_list, temperature, rng=rng)
+
+                candidates = fuser.fuse_logits(ouro_logits_list, hrm_logits_list)
+                fused_top_k = set(tid for tid, _, _ in candidates[:top_k])
+                jaccard_fused_ouro_sum += jaccard_index(fused_top_k, ouro_set)
+                jaccard_fused_hrm_sum += jaccard_index(fused_top_k, hrm_set)
 
                 hrm_ids_list = [hrm_tid]
                 hrm_gen_ids.add(hrm_tid)
@@ -798,6 +815,10 @@ def run_benchmark(
             r.avg_fusion_regret = regret_sum / n_kl_steps
             r.contribution_ratio = ouro_contrib_sum / n_kl_steps
             r.calibration_error = calibration_error(cal_probs, cal_outcomes)
+            if jaccard_steps > 0:
+                r.avg_token_overlap = jaccard_ouro_hrm_sum / jaccard_steps
+                r.fused_ouro_overlap = jaccard_fused_ouro_sum / jaccard_steps
+                r.fused_hrm_overlap = jaccard_fused_hrm_sum / jaccard_steps
             r.entropy_delta = r.fused_entropy - 0.5 * (
                 -sum(p * math.log(max(p, 1e-10)) for p in ouro_probs)
                 + -sum(p * math.log(max(p, 1e-10)) for p in hrm_probs)
@@ -857,6 +878,12 @@ def run_benchmark(
                 stats.append(f"ent_delta={r.entropy_delta:+.2f}")
             if r.token_diversity > 0:
                 stats.append(f"diversity={r.token_diversity:.2f}")
+            if r.avg_token_overlap > 0:
+                stats.append(f"jaccard_oh={r.avg_token_overlap:.3f}")
+            if r.fused_ouro_overlap > 0:
+                stats.append(f"jaccard_fo={r.fused_ouro_overlap:.3f}")
+            if r.fused_hrm_overlap > 0:
+                stats.append(f"jaccard_fh={r.fused_hrm_overlap:.3f}")
             if stats:
                 print(f"    stats:      {' | '.join(stats)}", file=sys.stderr)
 
@@ -871,16 +898,18 @@ def format_table(results: list[BenchmarkResult], show_completions: bool = False)
     lines.append(
         f"{'Config':30s}  {'Decode':>8s}  {'Gen':>8s}  {'FusedPPL':>9s}  {'BPT':>6s}  {'RawBPT':>7s}  {'zlib':>6s}  {'KL(o>h)':>8s}  {'JSD':>6s}  "
         f"{'WinRate':>8s}  {'Gain':>8s}  {'Oracle':>8s}  {'Entropy':>8s}  "
-        f"{'Agree':>6s}  {'Top1':>6s}  {'Top10':>6s}  {'Regret':>7s}  {'Ouro%':>6s}  {'CalErr':>7s}  {'EntDlt':>7s}  {'Diversity':>9s}  {'OuroTok':>8s}  {'HrmTok':>8s}"
+        f"{'Agree':>6s}  {'Top1':>6s}  {'Top10':>6s}  {'Regret':>7s}  {'Ouro%':>6s}  {'CalErr':>7s}  {'EntDlt':>7s}  {'Diversity':>9s}  "
+        f"{'OH_J':>6s}  {'FO_J':>6s}  {'FH_J':>6s}  {'OuroTok':>8s}  {'HrmTok':>8s}"
     )
-    lines.append("-" * 234)
+    lines.append("-" * 260)
     for r in results:
         label = f"{r.model}/{r.strategy}"
         lines.append(
             f"{label:30s}  {r.decoding_tps:7.1f}  {r.generation_tps:7.1f}  "
             f"{r.fused_ppl:9.1f}  {r.fused_bpt:6.2f}  {r.raw_bpt:7.2f}  {r.zlib_ratio:6.3f}  {r.avg_kl_oh:8.3f}  {r.avg_jsd:6.3f}  "
             f"{r.fusion_win_rate:7.1%}  {r.avg_fusion_gain:+7.3f}  {r.oracle_rate:7.1%}  {r.fused_entropy:8.1f}  "
-            f"{r.agreement_rate:5.0%}  {r.top1_accuracy_fused:5.0%}  {r.top10_accuracy_fused:5.0%}  {r.avg_fusion_regret:7.3f}  {r.contribution_ratio:5.0%}  {r.calibration_error:7.3f}  {r.entropy_delta:+7.2f}  {r.token_diversity:9.2f}  {r.ouro_tokens_used:8d}  {r.hrm_tokens_used:8d}"
+            f"{r.agreement_rate:5.0%}  {r.top1_accuracy_fused:5.0%}  {r.top10_accuracy_fused:5.0%}  {r.avg_fusion_regret:7.3f}  {r.contribution_ratio:5.0%}  {r.calibration_error:7.3f}  {r.entropy_delta:+7.2f}  {r.token_diversity:9.2f}  "
+            f"{r.avg_token_overlap:6.3f}  {r.fused_ouro_overlap:6.3f}  {r.fused_hrm_overlap:6.3f}  {r.ouro_tokens_used:8d}  {r.hrm_tokens_used:8d}"
         )
         if show_completions and r.prompt:
             prompt_short = r.prompt.replace("\n", "\\n")
@@ -907,6 +936,7 @@ class RobustnessResult:
     fusion_win_rate: float = 0.0
     avg_kl_oh: float = 0.0
     avg_kl_ho: float = 0.0
+    avg_token_overlap: float = 0.0
     ouro_entropy: float = 0.0
     hrm_entropy: float = 0.0
     generated_len: int = 0
@@ -952,7 +982,7 @@ def run_robustness_benchmark(
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k
     from llm_fusion.generate import format_hrm_prompt
     from llm_fusion.metrics import fusion_gain as _calc_gain
-    from llm_fusion.metrics import parent_prob_for_token
+    from llm_fusion.metrics import parent_prob_for_token, jaccard_index
 
     fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, "average")
 
@@ -976,6 +1006,8 @@ def run_robustness_benchmark(
         fusion_wins = 0
         n_steps = 0
         generated_text = ""
+        jaccard_ouro_hrm_sum = 0.0
+        jaccard_steps = 0
 
         for step in range(min(max_new_tokens, 30)):
             ouro_prefix_ids = (
@@ -1006,6 +1038,9 @@ def run_robustness_benchmark(
             hrm_dist = dict(zip(hrm_ids_k, hrm_probs))
             total_kl_oh += compute_kl(ouro_dist, hrm_dist)
             total_kl_ho += compute_kl(hrm_dist, ouro_dist)
+
+            jaccard_ouro_hrm_sum += jaccard_index(set(ouro_ids_k), set(hrm_ids_k))
+            jaccard_steps += 1
 
             tid, token_str, prob = fuser.sample_token(ouro_logits, hrm_logits, temperature)
             ouro_match = ouro_tok.encode(token_str).ids
@@ -1051,6 +1086,7 @@ def run_robustness_benchmark(
                 fusion_win_rate=fusion_wins / max(n_steps, 1),
                 avg_kl_oh=total_kl_oh / max(n_steps, 1),
                 avg_kl_ho=total_kl_ho / max(n_steps, 1),
+                avg_token_overlap=jaccard_ouro_hrm_sum / max(jaccard_steps, 1),
                 ouro_entropy=-sum(p * math.log(max(p, 1e-10)) for p in ouro_probs),
                 hrm_entropy=-sum(p * math.log(max(p, 1e-10)) for p in hrm_probs),
                 generated_len=n_steps,
@@ -1100,6 +1136,7 @@ def format_robustness_table(
         avg_gain = sum(r.avg_fusion_gain for r in items) / n
         avg_win = sum(r.fusion_win_rate for r in items) / n
         avg_kl = sum(r.avg_kl_oh for r in items) / n
+        avg_jaccard = sum(r.avg_token_overlap for r in items) / n
 
         lines.append(f"\n  [{group_name}]  ({n} prompts)")
         lines.append(
@@ -1112,16 +1149,19 @@ def format_robustness_table(
         lines.append(f"    {'Fusion Gain':25s}  {'':>8s}  {'':>8s}  {'':>8s}  {avg_gain:+8.3f}")
         lines.append(f"    {'Fusion Win Rate':25s}  {'':>8s}  {'':>8s}  {'':>8s}  {avg_win:7.1%}")
         lines.append(f"    {'Avg KL(O||H)':25s}  {'':>8s}  {'':>8s}  {'':>8s}  {avg_kl:8.2f}")
+        lines.append(f"    {'Token Jaccard':25s}  {'':>8s}  {'':>8s}  {'':>8s}  {avg_jaccard:8.3f}")
 
     lines.append(f"\n  {'TOTAL':25s}  ({len(results)} prompts)")
     if results:
         all_gains = [r.avg_fusion_gain for r in results]
         all_wins = [r.fusion_win_rate for r in results]
         all_kl = [r.avg_kl_oh for r in results]
+        all_jaccard = [r.avg_token_overlap for r in results]
         mean_gain = sum(all_gains) / len(all_gains)
         lines.append(f"    Mean fusion gain:  {mean_gain:+.4f}")
         lines.append(f"    Mean fusion win:   {sum(all_wins) / len(all_wins):.1%}")
         lines.append(f"    Mean KL(O||H):     {sum(all_kl) / len(all_kl):.2f}")
+        lines.append(f"    Mean Jaccard:      {sum(all_jaccard) / len(all_jaccard):.3f}")
         lines.append(
             f"    Fusion outperforms best parent on avg: {'YES' if mean_gain > 0 else 'NO'}"
         )
@@ -1140,7 +1180,7 @@ def run_graph_benchmark(
 
     token_counts = [10, 30, 50]
     strategies = ["average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid", "slerp", "simple", "sqrt-product", "min", "log-sum", "norm-product"]
-    metrics = ["fusion_win_rate", "avg_fusion_gain", "avg_kl_oh", "avg_jsd", "fused_entropy", "agreement_rate", "top1_accuracy_fused", "top10_accuracy_fused", "avg_fusion_regret", "contribution_ratio", "calibration_error", "entropy_delta"]
+    metrics = ["fusion_win_rate", "avg_fusion_gain", "avg_kl_oh", "avg_jsd", "fused_entropy", "agreement_rate", "top1_accuracy_fused", "top10_accuracy_fused", "avg_fusion_regret", "contribution_ratio", "calibration_error", "entropy_delta", "avg_token_overlap"]
     metric_labels = {
         "fusion_win_rate": "Win Rate",
         "avg_fusion_gain": "Fusion Gain",
@@ -1154,6 +1194,7 @@ def run_graph_benchmark(
         "contribution_ratio": "Ouro Contribution",
         "calibration_error": "Calibration Err",
         "entropy_delta": "Entropy Delta",
+        "avg_token_overlap": "Token Jaccard",
     }
 
     all_results: dict[int, list[BenchmarkResult]] = {}
@@ -1179,7 +1220,10 @@ def run_graph_benchmark(
             )
             all_results[n] = results
 
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    n_metrics = len(metrics)
+    n_cols = 4
+    n_rows = (n_metrics + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 5 * n_rows))
     fig.suptitle("Fusion Metrics vs Completion Tokens", fontsize=14)
 
     for ax, metric in zip(axes.flat, metrics):
@@ -1198,8 +1242,8 @@ def run_graph_benchmark(
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    if len(metrics) < len(axes.flat):
-        for ax in axes.flat[len(metrics):]:
+    if n_metrics < axes.size:
+        for ax in axes.flat[n_metrics:]:
             ax.set_visible(False)
 
     plt.tight_layout()
