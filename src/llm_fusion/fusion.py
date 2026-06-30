@@ -83,7 +83,7 @@ class Fuser:
         self.ouro_weight = ouro_weight
         self.hrm_weight = 1.0 - ouro_weight
         self.top_k = top_k
-        valid = ("average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid", "slerp", "simple", "sqrt-product", "min", "log-sum", "norm-product")
+        valid = ("average", "product", "min-entropy", "min-perplexity", "cascade", "dynamic", "adaptive", "confidence", "hybrid", "slerp", "simple", "sqrt-product", "min", "log-sum", "norm-product", "smooth-max")
         if strategy not in valid:
             raise ValueError(f"Unknown strategy: {strategy!r}")
         self.strategy = strategy
@@ -93,6 +93,7 @@ class Fuser:
         self.dynamic_initial_weight = dynamic_initial_weight
         self.dynamic_final_weight = dynamic_final_weight
         self.dynamic_total_steps = dynamic_total_steps
+        self.smooth_max_epsilon = 1.0
 
     def _fuse_logits_average(
         self,
@@ -449,6 +450,52 @@ class Fuser:
         fused_items = sorted(fused.items(), key=lambda x: -x[1])
         return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
 
+    def _fuse_logits_smooth_max(
+        self,
+        ouro_logits: list[float],
+        hrm_logits: list[float],
+    ) -> list[tuple[int, float, str]]:
+        epsilon = getattr(self, "smooth_max_epsilon", 1.0)
+        ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
+        hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
+
+        ouro_given_hrm: dict[int, float] = {}
+        for oid, prob in zip(ouro_top_ids, ouro_probs):
+            match = self.matcher.ouro_to_hrm(oid)
+            if not match.target_ids:
+                continue
+            if match.confidence == "mismatch":
+                continue
+            match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
+            for tid in match.target_ids:
+                ouro_given_hrm[tid] = ouro_given_hrm.get(tid, 0.0) + share
+
+        hrm_probs_dict = dict(zip(hrm_top_ids, hrm_probs))
+        all_ids = set(ouro_given_hrm) | set(hrm_probs_dict)
+
+        fused = {}
+        for tid in all_ids:
+            p_ouro = ouro_given_hrm.get(tid, 0.0)
+            p_hrm = hrm_probs_dict.get(tid, 0.0)
+            # smooth_max(a, b) = epsilon * log(exp(a/epsilon) + exp(b/epsilon))
+            # Numerically stable: max + epsilon * log(exp((a-max)/eps) + exp((b-max)/eps))
+            m = max(p_ouro, p_hrm)
+            if m <= 0:
+                fused[tid] = 0.0
+            else:
+                fused[tid] = m + epsilon * math.log(
+                    math.exp((p_ouro - m) / epsilon) + math.exp((p_hrm - m) / epsilon)
+                )
+
+        total = sum(fused.values())
+        if total <= 0:
+            return []
+        fused = {tid: p / total for tid, p in fused.items()}
+
+        fused_items = sorted(fused.items(), key=lambda x: -x[1])
+        return [(tid, p, self.hrm_tok.decode([tid])) for tid, p in fused_items]
+
     def _fuse_logits_norm_product(
         self,
         ouro_logits: list[float],
@@ -619,6 +666,8 @@ class Fuser:
             return self._fuse_logits_log_sum(ouro_logits, hrm_logits)
         if self.strategy == "norm-product":
             return self._fuse_logits_norm_product(ouro_logits, hrm_logits)
+        if self.strategy == "smooth-max":
+            return self._fuse_logits_smooth_max(ouro_logits, hrm_logits)
         return self._fuse_logits_average(ouro_logits, hrm_logits)
 
     def model_distributions(

@@ -394,6 +394,7 @@ def run_benchmark(
             {"model": "fused", "strategy": "min"},
             {"model": "fused", "strategy": "log-sum"},
             {"model": "fused", "strategy": "norm-product"},
+            {"model": "fused", "strategy": "smooth-max"},
         ]
 
     if bench_cache is not None:
