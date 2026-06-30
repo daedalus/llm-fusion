@@ -961,6 +961,7 @@ def run_robustness_benchmark(
     temperature: float = 0.0,
     top_k: int = 30,
     ouro_weight: float = 0.5,
+    repetition_penalty: float = 1.0,
     _local: bool = True,
     base_dir: str = "",
     battery: list[dict[str, str]] | None = None,
@@ -995,7 +996,7 @@ def run_robustness_benchmark(
     device = loaded.device
 
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k
-    from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID
+    from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID, apply_repetition_penalty
     from llm_fusion.metrics import fusion_gain as _calc_gain
     from llm_fusion.metrics import parent_prob_for_token, jaccard_index
 
@@ -1026,6 +1027,8 @@ def run_robustness_benchmark(
         generated_text = ""
         jaccard_ouro_hrm_sum = 0.0
         jaccard_steps = 0
+        seen_ouro_ids: set[int] = set()
+        seen_hrm_ids: set[int] = set()
 
         for step in range(min(max_new_tokens, 30)):
             ouro_prefix_ids = (
@@ -1049,6 +1052,10 @@ def run_robustness_benchmark(
                 )
             hrm_logits = hrm_out.logits[0, -1, :].tolist()
 
+            if repetition_penalty != 1.0:
+                ouro_logits = apply_repetition_penalty(ouro_logits, seen_ouro_ids, repetition_penalty)
+                hrm_logits = apply_repetition_penalty(hrm_logits, seen_hrm_ids, repetition_penalty)
+
             ouro_ids_k, ouro_probs = softmax_top_k(ouro_logits, top_k)
             hrm_ids_k, hrm_probs = softmax_top_k(hrm_logits, top_k)
 
@@ -1068,6 +1075,9 @@ def run_robustness_benchmark(
             if prob > max(ouro_p, hrm_p):
                 fusion_wins += 1
 
+            seen_hrm_ids.add(tid)
+            if ouro_match:
+                seen_ouro_ids.update(ouro_match)
             hrm_ids_list.append(tid)
             if token_str:
                 generated_text += token_str
@@ -1383,6 +1393,7 @@ def main() -> None:
         results = run_robustness_benchmark(
             max_new_tokens=args.max_new_tokens,
             temperature=args.temp,
+            repetition_penalty=args.repetition_penalty,
             _local=True,
             cache=args.benchmark_cache,
             device=args.device,
