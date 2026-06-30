@@ -639,19 +639,6 @@ class Fuser:
         ouro_logits: list[float],
         hrm_logits: list[float],
     ) -> list[tuple[int, float, str]]:
-        # Check probability mass overlap — product-family needs agreement
-        _ouro_ids, _ouro_probs = softmax_top_k(ouro_logits, self.top_k)
-        _hrm_ids, _hrm_probs = softmax_top_k(hrm_logits, self.top_k)
-        _ouro_dict = dict(zip(_ouro_ids, _ouro_probs))
-        _hrm_dict = dict(zip(_hrm_ids, _hrm_probs))
-        _shared = set(_ouro_dict) & set(_hrm_dict)
-        _mass = sum(min(_ouro_dict[t], _hrm_dict[t]) for t in _shared)
-
-        if _mass < self.min_overlap and self.strategy in (
-            "product", "sqrt-product", "log-sum", "min", "norm-product",
-        ):
-            return self._fuse_logits_average(ouro_logits, hrm_logits)
-
         if self.strategy == "product":
             return self._fuse_logits_product(ouro_logits, hrm_logits)
         if self.strategy == "min-entropy":
