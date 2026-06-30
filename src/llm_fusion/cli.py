@@ -128,6 +128,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run Ouro and HRM forward passes in parallel threads",
     )
+    parser.add_argument(
+        "--eos-mode",
+        choices=["default", "early", "agreed"],
+        default="default",
+        help="EOS stop condition: default=fused token, early=first model EOS, agreed=both models EOS",
+    )
     return parser
 
 
@@ -172,6 +178,7 @@ def main() -> int:
         "debug": args.debug,
         "seed": args.seed,
         "parallel": args.parallel,
+        "eos_mode": args.eos_mode,
     }
     generate(**gen_kwargs)
     return 0

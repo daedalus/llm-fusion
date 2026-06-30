@@ -176,6 +176,7 @@ def generate(
     hrm_path: str = "sapientinc/HRM-Text-1B",
     base_dir: str | Path = "",
     parallel: bool = False,
+    eos_mode: str = "default",
 ) -> None:
     try:
         import torch
@@ -454,7 +455,18 @@ def generate(
             hrm_gen_ids.add(tid)
             eos_id = HRM_EOS_ID
 
-        if tid == eos_id:
+        if model == "fused" and eos_mode != "default":
+            ouro_top1 = max(range(len(ouro_logits)), key=lambda i: ouro_logits[i])
+            hrm_top1 = max(range(len(hrm_logits)), key=lambda i: hrm_logits[i])
+            ouro_is_eos = ouro_top1 == OURO_EOS_ID
+            hrm_is_eos = hrm_top1 == HRM_EOS_ID
+            if eos_mode == "early" and (ouro_is_eos or hrm_is_eos):
+                print(f"\n[EOS at step {step + 1} — {eos_mode}: ouro_eos={ouro_is_eos} hrm_eos={hrm_is_eos}]")
+                break
+            elif eos_mode == "agreed" and ouro_is_eos and hrm_is_eos:
+                print(f"\n[EOS at step {step + 1} — agreed]")
+                break
+        elif tid == eos_id:
             print(f"\n[EOS at step {step + 1}]")
             break
 

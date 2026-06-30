@@ -373,6 +373,7 @@ def run_benchmark(
     bench_cache: BenchmarkCache | None = None,
     seed: int | None = None,
     parallel: bool = False,
+    eos_mode: str = "default",
 ) -> list[BenchmarkResult]:
     if configs is None:
         configs = [
@@ -746,11 +747,21 @@ def run_benchmark(
             if step == 0:
                 ttft = time.time() - t0
 
-            check_tid = hrm_tid if model == "fused" else (tid if model in ("ouro", "hrm") else None)
-            if check_tid is not None:
-                eos = HRM_EOS_ID if model in ("fused", "hrm") else OURO_EOS_ID
-                if check_tid == eos:
+            if model == "fused" and eos_mode != "default":
+                ouro_top1_tid = max(range(len(ouro_logits_list)), key=lambda i: ouro_logits_list[i])
+                hrm_top1_tid = max(range(len(hrm_logits_list)), key=lambda i: hrm_logits_list[i])
+                ouro_is_eos = ouro_top1_tid == OURO_EOS_ID
+                hrm_is_eos = hrm_top1_tid == HRM_EOS_ID
+                if eos_mode == "early" and (ouro_is_eos or hrm_is_eos):
                     break
+                elif eos_mode == "agreed" and ouro_is_eos and hrm_is_eos:
+                    break
+            else:
+                check_tid = hrm_tid if model == "fused" else (tid if model in ("ouro", "hrm") else None)
+                if check_tid is not None:
+                    eos = HRM_EOS_ID if model in ("fused", "hrm") else OURO_EOS_ID
+                    if check_tid == eos:
+                        break
 
             if token_str and model != "fused":
                 generated_text += token_str
@@ -922,6 +933,7 @@ def format_table(results: list[BenchmarkResult], show_completions: bool = False)
 @dataclass
 class RobustnessResult:
     prompt: str = ""
+    completion: str = ""
     category: str = ""
     subdomain: str = ""
     ouro_ppl: float = 0.0
@@ -953,6 +965,8 @@ def run_robustness_benchmark(
     battery: list[dict[str, str]] | None = None,
     cache: bool = False,
     device: str = "auto",
+    show_completions: bool = False,
+    eos_mode: str = "default",
 ) -> list[RobustnessResult]:
     if battery is None:
         battery = ROBUSTNESS_BATTERY
@@ -980,18 +994,21 @@ def run_robustness_benchmark(
     device = loaded.device
 
     from llm_fusion.fusion import Fuser, compute_kl, softmax_top_k
-    from llm_fusion.generate import format_hrm_prompt
+    from llm_fusion.generate import format_hrm_prompt, HRM_EOS_ID, OURO_EOS_ID
     from llm_fusion.metrics import fusion_gain as _calc_gain
     from llm_fusion.metrics import parent_prob_for_token, jaccard_index
 
     fuser = Fuser(matcher, ouro_tok, hrm_tok, ouro_weight, top_k, "average")
 
     results: list[RobustnessResult] = []
+    total_prompts = len(battery)
 
-    for entry in battery:
+    for idx, entry in enumerate(battery):
         prompt = entry["prompt"]
         cat = entry["category"]
         sub = entry.get("subdomain", "")
+        prompt_display = prompt[:40].replace("\n", "\\n") if prompt else "(empty)"
+        print(f"  [{idx+1}/{total_prompts}] [{cat}/{sub}] {prompt_display}...", file=sys.stderr)
 
         hrm_prompt = format_hrm_prompt(prompt, "direct")
         hrm_ids_list = hrm_tok.encode(hrm_prompt).ids
@@ -1055,8 +1072,18 @@ def run_robustness_benchmark(
                 generated_text += token_str
             n_steps += 1
 
-            if tid in (11, 0):
-                break
+            if eos_mode != "default":
+                ouro_top1 = max(range(len(ouro_logits)), key=lambda i: ouro_logits[i])
+                hrm_top1 = max(range(len(hrm_logits)), key=lambda i: hrm_logits[i])
+                ouro_is_eos = ouro_top1 == OURO_EOS_ID
+                hrm_is_eos = hrm_top1 == HRM_EOS_ID
+                if eos_mode == "early" and (ouro_is_eos or hrm_is_eos):
+                    break
+                elif eos_mode == "agreed" and ouro_is_eos and hrm_is_eos:
+                    break
+            else:
+                if tid in (HRM_EOS_ID, OURO_EOS_ID):
+                    break
 
         ouro_ppl = _quick_ppl(prompt, ouro_model, ouro_tok, device)
         hrm_ppl = _quick_ppl(format_hrm_prompt(prompt, "direct"), hrm_model, hrm_tok, device)
@@ -1072,6 +1099,7 @@ def run_robustness_benchmark(
         results.append(
             RobustnessResult(
                 prompt=prompt[:60],
+                completion=generated_text,
                 category=cat,
                 subdomain=sub,
                 ouro_ppl=ouro_ppl,
@@ -1092,6 +1120,29 @@ def run_robustness_benchmark(
                 generated_len=n_steps,
             )
         )
+
+        if show_completions:
+            prompt_short = prompt.replace("\n", "\\n")
+            completion_short = generated_text.replace("\n", "\\n") if generated_text else ""
+            print(f"    prompt:     {prompt_short}", file=sys.stderr)
+            print(f"    completion: {completion_short}", file=sys.stderr)
+            stats = []
+            if ouro_ppl > 0:
+                stats.append(f"ouro_ppl={ouro_ppl:.1f}")
+            if hrm_ppl > 0:
+                stats.append(f"hrm_ppl={hrm_ppl:.1f}")
+            if fused_ppl > 0:
+                stats.append(f"fused_ppl={fused_ppl:.1f}")
+            if total_kl_oh / max(n_steps, 1) > 0:
+                stats.append(f"kl={total_kl_oh / max(n_steps, 1):.3f}")
+            if fusion_wins / max(n_steps, 1) > 0:
+                stats.append(f"win={fusion_wins / max(n_steps, 1):.0%}")
+            if total_gain / max(n_steps, 1) != 0:
+                stats.append(f"gain={total_gain / max(n_steps, 1):+.3f}")
+            if jaccard_steps > 0:
+                stats.append(f"jaccard={jaccard_ouro_hrm_sum / jaccard_steps:.3f}")
+            if stats:
+                print(f"    stats:      {' | '.join(stats)}", file=sys.stderr)
 
     if cache:
         _save_cache(ck, "robustness", results)
@@ -1267,6 +1318,12 @@ def main() -> None:
     parser.add_argument("--parallel", action="store_true",
                         help="Run Ouro and HRM forward passes in parallel threads")
     parser.add_argument(
+        "--eos-mode",
+        choices=["default", "early", "agreed"],
+        default="default",
+        help="EOS stop condition: default=fused token, early=first model EOS, agreed=both models EOS",
+    )
+    parser.add_argument(
         "--robustness",
         action="store_true",
         help="Run diverse robustness battery instead of speed benchmark",
@@ -1328,6 +1385,8 @@ def main() -> None:
             _local=True,
             cache=args.benchmark_cache,
             device=args.device,
+            show_completions=args.show_completions,
+            eos_mode=args.eos_mode,
         )
         tag = "robustness"
         print("\n" + format_robustness_table(results))
@@ -1346,6 +1405,7 @@ def main() -> None:
                 bench_cache=bench_cache,
                 seed=args.seed,
                 parallel=args.parallel,
+                eos_mode=args.eos_mode,
             )
             tag = "speed"
             print("\n" + format_table(results, show_completions=args.show_completions))
@@ -1366,6 +1426,7 @@ def main() -> None:
                     bench_cache=bench_cache,
                     seed=args.seed,
                     parallel=args.parallel,
+                    eos_mode=args.eos_mode,
                 )
                 for r in bench_results:
                     key = f"{r.model}/{r.strategy}"
