@@ -94,7 +94,6 @@ class Fuser:
         self.dynamic_final_weight = dynamic_final_weight
         self.dynamic_total_steps = dynamic_total_steps
         self.smooth_max_epsilon = 1.0
-        self.min_overlap = 0.05
 
     def _fuse_logits_average(
         self,
@@ -155,10 +154,13 @@ class Fuser:
         hrm_probs_dict = dict(zip(hrm_top_ids, hrm_probs))
 
         all_ids = set(ouro_given_hrm) | set(hrm_probs_dict)
+        N = len(all_ids)
+        eps = 0.01  # uniform background to avoid zero-product collapse
+
         fused = {}
         for tid in all_ids:
-            p_ouro = ouro_given_hrm.get(tid, 0.0)
-            p_hrm = hrm_probs_dict.get(tid, 0.0)
+            p_ouro = (1 - eps) * ouro_given_hrm.get(tid, 0.0) + eps / N
+            p_hrm = (1 - eps) * hrm_probs_dict.get(tid, 0.0) + eps / N
             fused[tid] = p_ouro * p_hrm
 
         total = sum(fused.values())
@@ -360,10 +362,13 @@ class Fuser:
         hrm_probs_dict = dict(zip(hrm_top_ids, hrm_probs))
 
         all_ids = set(ouro_given_hrm) | set(hrm_probs_dict)
+        N = len(all_ids)
+        eps = 0.01
+
         fused = {}
         for tid in all_ids:
-            p_ouro = ouro_given_hrm.get(tid, 0.0)
-            p_hrm = hrm_probs_dict.get(tid, 0.0)
+            p_ouro = (1 - eps) * ouro_given_hrm.get(tid, 0.0) + eps / N
+            p_hrm = (1 - eps) * hrm_probs_dict.get(tid, 0.0) + eps / N
             fused[tid] = math.sqrt(p_ouro * p_hrm)
 
         total = sum(fused.values())
@@ -397,10 +402,13 @@ class Fuser:
         hrm_probs_dict = dict(zip(hrm_top_ids, hrm_probs))
 
         all_ids = set(ouro_given_hrm) | set(hrm_probs_dict)
+        N = len(all_ids)
+        eps = 0.01
+
         fused = {}
         for tid in all_ids:
-            p_ouro = ouro_given_hrm.get(tid, 0.0)
-            p_hrm = hrm_probs_dict.get(tid, 0.0)
+            p_ouro = (1 - eps) * ouro_given_hrm.get(tid, 0.0) + eps / N
+            p_hrm = (1 - eps) * hrm_probs_dict.get(tid, 0.0) + eps / N
             fused[tid] = min(p_ouro, p_hrm)
 
         total = sum(fused.values())
@@ -434,10 +442,13 @@ class Fuser:
         hrm_probs_dict = dict(zip(hrm_top_ids, hrm_probs))
 
         all_ids = set(ouro_given_hrm) | set(hrm_probs_dict)
+        N = len(all_ids)
+        eps = 0.01
+
         fused = {}
         for tid in all_ids:
-            p_ouro = max(ouro_given_hrm.get(tid, 0.0), 1e-10)
-            p_hrm = max(hrm_probs_dict.get(tid, 0.0), 1e-10)
+            p_ouro = max((1 - eps) * ouro_given_hrm.get(tid, 0.0) + eps / N, 1e-10)
+            p_hrm = max((1 - eps) * hrm_probs_dict.get(tid, 0.0) + eps / N, 1e-10)
             fused[tid] = math.log(p_ouro) + math.log(p_hrm)
 
         if fused:
@@ -504,33 +515,34 @@ class Fuser:
     ) -> list[tuple[int, float, str]]:
         import torch
 
-        ouro_top_ids, _ = softmax_top_k(ouro_logits, self.top_k)
-        hrm_top_ids, _ = softmax_top_k(hrm_logits, self.top_k)
+        ouro_top_ids, ouro_probs = softmax_top_k(ouro_logits, self.top_k)
+        hrm_top_ids, hrm_probs = softmax_top_k(hrm_logits, self.top_k)
 
         ouro_given_hrm: dict[int, float] = {}
-        for oid in ouro_top_ids:
+        for oid, prob in zip(ouro_top_ids, ouro_probs):
             match = self.matcher.ouro_to_hrm(oid)
             if not match.target_ids:
                 continue
             if match.confidence == "mismatch":
                 continue
             match_weight = 1.0 if match.confidence == "exact" else 0.5
+            share = prob / len(match.target_ids) * match_weight
             for tid in match.target_ids:
-                ouro_given_hrm[tid] = ouro_given_hrm.get(tid, 0.0) + match_weight / len(match.target_ids)
+                ouro_given_hrm[tid] = ouro_given_hrm.get(tid, 0.0) + share
 
-        hrm_probs_dict = dict(zip(hrm_top_ids, softmax_top_k(hrm_logits, self.top_k)[1]))
+        hrm_probs_dict = dict(zip(hrm_top_ids, hrm_probs))
 
         all_ids = sorted(set(ouro_given_hrm) | set(hrm_probs_dict))
         if not all_ids:
             return []
 
-        z_ouro = torch.tensor([ouro_given_hrm.get(tid, 0.0) for tid in all_ids], dtype=torch.float32)
-        z_hrm = torch.tensor([hrm_probs_dict.get(tid, 0.0) for tid in all_ids], dtype=torch.float32)
+        N = len(all_ids)
+        eps = 0.01
 
-        s_ouro = torch.softmax(z_ouro, dim=0)
-        s_hrm = torch.softmax(z_hrm, dim=0)
+        z_ouro = torch.tensor([(1 - eps) * ouro_given_hrm.get(tid, 0.0) + eps / N for tid in all_ids], dtype=torch.float32)
+        z_hrm = torch.tensor([(1 - eps) * hrm_probs_dict.get(tid, 0.0) + eps / N for tid in all_ids], dtype=torch.float32)
 
-        product = s_ouro * s_hrm
+        product = z_ouro * z_hrm
         product_sum = product.sum()
         if product_sum <= 0:
             return []
